@@ -1,20 +1,41 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# ReelTrack
 
-# Run and deploy your AI Studio app
+A powerful and elegant tracking application for movie and series enthusiasts. Organize your collection, track your progress, and discover new favorites with ease.
 
-This contains everything you need to run your app locally.
+## Features
 
-View your app in AI Studio: https://ai.studio/apps/44dd01da-ab42-42b3-b578-bb4f90b0f3d2
+- **Library Management**: Add, edit, and categorize your favorite movies and TV shows.
+- **Smart Tracking**: Keep track of watched episodes and seasons for series.
+- **Stats Dashboard**: Visualize your watching habits and streaks.
+- **Discovery**: Search for titles using TMDB integration and get recommendations.
+- **Premium UI**: Modern dark mode interface with glassmorphism and smooth animations.
 
-## Run Locally
+## Technologies
 
-**Prerequisites:**  Node.js
+- **Frontend**: React 19, Vite, TypeScript
+- **Styling**: Tailwind CSS 4.0
+- **Animations**: Motion (Framer Motion)
+- **Icons**: Lucide React
 
+## Setup & Running
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+1. **Prerequisites**: Node.js installed.
+2. **Installation**:
+
+   ```bash
+   npm install
+   ```
+
+3. **Environment**: Set up your API keys in `.env` (TMDB API key).
+4. **Development**:
+
+   ```bash
+   npm run dev
+   ```
+
+## Localhost Deployment
+
+This project is pre-configured for **XAMPP (Apache)**.
+
+1. Build the project: `npm run build`
+2. Accessible at: `http://localhost/reeltrack/`
