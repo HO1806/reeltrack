@@ -1,0 +1,96 @@
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Crimson+Pro:ital,wght@0,200..900;1,200..900&family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-bebas: "Bebas Neue", sans-serif;
+  --font-crimson: "Crimson Pro", serif;
+  --font-sans: "DM Sans", sans-serif;
+
+  --color-background: #08080f;
+  --color-card: #0f0f1a;
+  --color-elevated: #16161f;
+  --color-accent: #f5c518;
+  --color-accent-dim: #c49a10;
+  --color-text-primary: #ececec;
+  --color-text-secondary: #888;
+  --color-text-muted: #555;
+  
+  --color-green: #4caf50;
+  --color-blue: #2196f3;
+  --color-red: #f44336;
+  --color-purple: #9c27b0;
+}
+
+@layer base {
+  body {
+    @apply bg-background text-text-primary font-sans antialiased selection:bg-accent selection:text-background;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3%3Ffilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/feTurbulence%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+    background-repeat: repeat;
+    background-size: 200px;
+    opacity: 0.98;
+  }
+
+  h1, h2, h3, .font-bebas {
+    @apply font-bebas tracking-wider;
+  }
+
+  /* Custom Scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-background;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-white/10 rounded-full hover:bg-accent/50 transition-colors;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply bg-elevated/60 backdrop-blur-2xl border border-white/5 shadow-2xl;
+  }
+
+  .btn-primary {
+    @apply bg-accent text-background font-bold px-6 py-2 rounded-full hover:brightness-110 active:scale-95 transition-all shadow-lg shadow-accent/10;
+  }
+
+  .btn-secondary {
+    @apply bg-white/5 text-text-primary border border-white/10 px-6 py-2 rounded-full hover:bg-white/10 transition-all;
+  }
+
+  .input-field {
+    @apply bg-white/5 border border-white/10 rounded-xl px-5 py-2.5 focus:outline-none focus:border-accent/40 transition-all placeholder:text-text-muted text-sm;
+  }
+
+  .pill-badge {
+    @apply px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-widest border border-white/10 bg-white/5;
+  }
+}
+
+.card-shadow {
+  box-shadow: 0 10px 30px -10px rgba(0,0,0,0.5);
+}
+
+.accent-glow {
+  box-shadow: 0 0 20px rgba(245, 197, 24, 0.15);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes checkBurst {
+  0% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.4); opacity: 0.5; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.animate-check {
+  animation: checkBurst 0.4s ease-out;
+}

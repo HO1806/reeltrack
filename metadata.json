@@ -1,0 +1,5 @@
+{
+  "name": "Reeltrack",
+  "description": "A personal movie and series tracker with TMDB integration, AI suggestions, and Stremio support.",
+  "requestFramePermissions": []
+}
