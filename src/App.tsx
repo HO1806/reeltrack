@@ -434,7 +434,11 @@ export default function App() {
   // --- Filtering & Sorting ---
   const genres = useMemo(() => {
     const set = new Set<string>();
-    library.forEach(e => e.genres.forEach(g => set.add(g)));
+    library.forEach(e => {
+      if (Array.isArray(e.genres)) {
+        e.genres.forEach(g => set.add(g));
+      }
+    });
     return Array.from(set).sort();
   }, [library]);
 
@@ -443,7 +447,7 @@ export default function App() {
       const matchesSearch = e.title.toLowerCase().includes(search.toLowerCase());
       const matchesType = typeFilter === 'all' || e.type === typeFilter;
       const matchesStatus = statusFilter === 'all' || e.status === statusFilter;
-      const matchesGenre = genreFilter === 'all' || e.genres.includes(genreFilter);
+      const matchesGenre = genreFilter === 'all' || (Array.isArray(e.genres) && e.genres.includes(genreFilter));
       const matchesStar = starFilter === 'all' || (e.rating.overall || 0) >= starFilter;
 
       if (activeTab === 'movies') return matchesSearch && e.type === 'movie' && e.status !== 'watched' && matchesGenre;

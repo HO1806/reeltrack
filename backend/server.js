@@ -96,16 +96,24 @@ function formatEntryForSQL(entry) {
     return data;
 }
 
+// Helper to safely parse JSON
+function safeParse(val, fallback) {
+    if (typeof val === 'string') {
+        try { return JSON.parse(val); } catch (e) { return fallback; }
+    }
+    return val || fallback;
+}
+
 // Routes
 app.get('/api/library', async (req, res) => {
     try {
         const [rows] = await pool.query('SELECT * FROM library ORDER BY dateAdded DESC');
         res.json(rows.map(row => ({
             ...row,
-            genres: row.genres || [],
-            cast: row.cast || [],
-            rating: row.rating || {},
-            tags: row.tags || [],
+            genres: safeParse(row.genres, []),
+            cast: safeParse(row.cast, []),
+            rating: safeParse(row.rating, {}),
+            tags: safeParse(row.tags, []),
             isFavorite: !!row.isFavorite,
             isPinned: !!row.isPinned,
             notifiedUnrated: !!row.notifiedUnrated,
