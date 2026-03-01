@@ -10,8 +10,9 @@ import { StatsDashboard } from './components/StatsDashboard';
 import { Suggestions } from './components/Suggestions';
 import { MovieDetails } from './components/MovieDetails';
 import { ToastContainer, ToastMessage } from './components/Toast';
-import { generateId, normalizeTitle, computeSmartScore, updateStreak } from './utils';
-import { getTMDBMetadata, searchTMDB } from './services/tmdb';
+import { generateId, normalizeTitle, computeSmartScore, updateStreak, isDuplicate } from './utils';
+import { getTMDBMetadata, searchTMDB, fetchAndEnrichTMDB } from './services/tmdb';
+import { api } from './services/api';
 import { motion, AnimatePresence } from 'motion/react';
 import { Play, X, Search, Popcorn, Film, Plus, Star, Tv, RotateCcw, Sparkles } from 'lucide-react';
 import { cn } from './utils';
@@ -25,9 +26,9 @@ export default function App() {
 
   const [settings, setSettings] = useState<Settings>(() => {
     const saved = localStorage.getItem('reeltrack_settings');
-    return saved ? JSON.parse(saved) : { 
-      tmdbApiKey: '', 
-      geminiApiKey: '', 
+    return saved ? JSON.parse(saved) : {
+      tmdbApiKey: '',
+      geminiApiKey: '',
       showPosters: true,
       defaultSort: 'smartScore',
       bestStreak: 0,
@@ -59,13 +60,63 @@ export default function App() {
   const [isSurpriseChoiceOpen, setIsSurpriseChoiceOpen] = useState(false);
   const [similarSource, setSimilarSource] = useState<LibraryEntry | null>(null);
   const [selectedEntry, setSelectedEntry] = useState<LibraryEntry | null>(null);
+  const [searchSuggestions, setSearchSuggestions] = useState<any[]>([]);
+  const [isSearchingAutocomplete, setIsSearchingAutocomplete] = useState(false);
+
+  // --- MySQL Sync ---
+  useEffect(() => {
+    const syncData = async () => {
+      try {
+        const syncedLibrary = await api.syncLibrary(library);
+        if (JSON.stringify(syncedLibrary) !== JSON.stringify(library)) {
+          setLibrary(syncedLibrary);
+        }
+      } catch (err) {
+        console.warn('MySQL Sync unavailable:', err);
+      }
+    };
+    syncData();
+  }, []);
+
+  // --- Autocomplete ---
+  useEffect(() => {
+    if (!search || search.length < 2 || !settings.tmdbApiKey) {
+      setSearchSuggestions([]);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      setIsSearchingAutocomplete(true);
+      try {
+        const results = await searchTMDB(search, settings.tmdbApiKey);
+        setSearchSuggestions(results.slice(0, 5));
+      } catch (e) {
+        console.error("Autocomplete failed:", e);
+      } finally {
+        setIsSearchingAutocomplete(false);
+      }
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [search, settings.tmdbApiKey]);
 
   // --- Storage ---
   useEffect(() => {
     localStorage.setItem('reeltrack_library', JSON.stringify(library));
+
+    // Auto-sync to MySQL on changes
+    const timeout = setTimeout(async () => {
+      try {
+        await api.syncLibrary(library);
+      } catch (e) { }
+    }, 2000);
+
     setIsSavedFlash(true);
     const timer = setTimeout(() => setIsSavedFlash(false), 1500);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      clearTimeout(timeout);
+    };
   }, [library]);
 
   useEffect(() => {
@@ -128,6 +179,18 @@ export default function App() {
       setLibrary(prev => prev.map(e => e.id === entry.id ? entry : e));
       addToast('success', 'Entry updated ✓');
     } else {
+      if (isDuplicate(entry.title, entry.year, library)) {
+        addToast('error', `'${entry.title}' is already in your library!`);
+        setNotifications(prev => [{
+          id: generateId(),
+          type: 'DUPLICATE_DETECTED',
+          message: `Double vision? '${entry.title}' (${entry.year}) is already in your library.`,
+          entryId: null,
+          read: false,
+          createdAt: new Date().toISOString()
+        }, ...prev]);
+        return;
+      }
       setLibrary(prev => [entry, ...prev]);
       addToast('success', 'Entry added ✓');
     }
@@ -150,8 +213,8 @@ export default function App() {
     setLibrary(prev => prev.map(e => {
       if (e.id === id) {
         const isCurrentlyWatched = e.status === 'watched';
-        return { 
-          ...e, 
+        return {
+          ...e,
           status: isCurrentlyWatched ? 'want_to_watch' : 'watched',
           dateWatched: isCurrentlyWatched ? null : new Date().toISOString()
         };
@@ -226,10 +289,8 @@ export default function App() {
     if (settings.tmdbApiKey) {
       try {
         addToast('info', 'Fetching details...');
-        const results = await searchTMDB(suggestion.title, settings.tmdbApiKey);
-        const match = results.find((r: any) => r.title === suggestion.title || r.name === suggestion.title);
-        if (match) {
-          const metadata = await getTMDBMetadata(match.id, suggestion.type === 'movie' ? 'movie' : 'tv', settings.tmdbApiKey);
+        const metadata = await fetchAndEnrichTMDB(suggestion.title, suggestion.type === 'movie' ? 'movie' : 'tv', settings.tmdbApiKey);
+        if (metadata) {
           Object.assign(skeleton, metadata);
         }
       } catch (e) {
@@ -274,13 +335,11 @@ export default function App() {
 
     if (settings.tmdbApiKey) {
       try {
-        const results = await searchTMDB(suggestion.title, settings.tmdbApiKey);
-        const match = results.find((r: any) => r.title === suggestion.title || r.name === suggestion.title);
-        if (match) {
-          const metadata = await getTMDBMetadata(match.id, suggestion.type === 'movie' ? 'movie' : 'tv', settings.tmdbApiKey);
+        const metadata = await fetchAndEnrichTMDB(suggestion.title, suggestion.type === 'movie' ? 'movie' : 'tv', settings.tmdbApiKey);
+        if (metadata) {
           Object.assign(skeleton, metadata);
         }
-      } catch (e) {}
+      } catch (e) { }
     }
 
     setLibrary(prev => [skeleton, ...prev]);
@@ -324,7 +383,7 @@ export default function App() {
       try {
         const metadata = await getTMDBMetadata(item.id, item.type === 'movie' ? 'movie' : 'tv', settings.tmdbApiKey);
         Object.assign(skeleton, metadata);
-      } catch (e) {}
+      } catch (e) { }
     }
 
     setLibrary(prev => [skeleton, ...prev]);
@@ -386,14 +445,14 @@ export default function App() {
       const matchesStatus = statusFilter === 'all' || e.status === statusFilter;
       const matchesGenre = genreFilter === 'all' || e.genres.includes(genreFilter);
       const matchesStar = starFilter === 'all' || (e.rating.overall || 0) >= starFilter;
-      
+
       if (activeTab === 'movies') return matchesSearch && e.type === 'movie' && e.status !== 'watched' && matchesGenre;
       if (activeTab === 'series') return matchesSearch && e.type === 'series' && e.status !== 'watched' && matchesGenre;
       if (activeTab === 'favorites') return matchesSearch && e.status === 'watched' && (e.rating.overall || 0) >= 4.5 && matchesGenre;
       if (activeTab === 'history') return matchesSearch && e.status === 'watched' && matchesType && matchesGenre && matchesStar;
       if (activeTab === 'suggestions') return false; // Handled separately
       if (activeTab === 'stats') return false; // Handled separately
-      
+
       return false;
     });
 
@@ -420,7 +479,7 @@ export default function App() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) return;
-      
+
       if (e.key.toLowerCase() === 'n') {
         e.preventDefault();
         setIsAddModalOpen(true);
@@ -443,7 +502,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-background text-text-primary selection:bg-accent selection:text-background">
-      <Navbar 
+      <Navbar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         onAdd={() => { setEditingEntry(null); setIsAddModalOpen(true); }}
@@ -465,8 +524,8 @@ export default function App() {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
             >
-              <MovieDetails 
-                entry={selectedEntry} 
+              <MovieDetails
+                entry={selectedEntry}
                 onBack={() => setSelectedEntry(null)}
                 tmdbApiKey={settings.tmdbApiKey}
                 onAdd={handleAddSimilar}
@@ -491,7 +550,7 @@ export default function App() {
               exit={{ opacity: 0 }}
               className="p-8"
             >
-              <Suggestions 
+              <Suggestions
                 library={library}
                 geminiApiKey={settings.geminiApiKey}
                 onAdd={handleAddFromSuggestion}
@@ -507,7 +566,7 @@ export default function App() {
               exit={{ opacity: 0 }}
               className="flex flex-col"
             >
-              <FilterBar 
+              <FilterBar
                 search={search} setSearch={setSearch}
                 type={typeFilter} setType={setTypeFilter}
                 status={statusFilter} setStatus={setStatusFilter}
@@ -518,10 +577,63 @@ export default function App() {
                 totalCount={library.length}
                 filteredCount={filteredLibrary.length}
                 activeTab={activeTab}
+                suggestions={searchSuggestions}
+                isSearchingSuggestions={isSearchingAutocomplete}
+                onSelectSuggestion={async (s) => {
+                  const type = s.media_type === 'movie' ? 'movie' : 'series';
+                  const existing = library.find(entry => entry.tmdbId === s.id);
+                  if (existing) {
+                    setSelectedEntry(existing);
+                    setSearch('');
+                    return;
+                  }
+
+                  // Create skeleton
+                  const skeleton: LibraryEntry = {
+                    id: generateId(),
+                    title: s.title || s.name,
+                    type: type as any,
+                    year: new Date(s.release_date || s.first_air_date).getFullYear(),
+                    genres: [],
+                    poster: s.poster_path ? `https://image.tmdb.org/t/p/w500${s.poster_path}` : '',
+                    description: s.overview || '',
+                    director: '',
+                    cast: [],
+                    runtime: 0,
+                    seasons: 0,
+                    currentSeason: 1,
+                    currentEpisode: 1,
+                    status: 'want_to_watch',
+                    rating: { story: null, acting: null, visuals: null, overall: null },
+                    rewatchCount: 0,
+                    streamingUrl: '',
+                    imdbId: '',
+                    tmdbId: s.id,
+                    tmdbPopularity: s.popularity,
+                    vote_average: s.vote_average,
+                    personalNote: '',
+                    dateAdded: new Date().toISOString(),
+                    dateWatched: null,
+                    tags: [],
+                    isFavorite: false,
+                    isPinned: false,
+                    notifiedUnrated: false
+                  };
+
+                  if (settings.tmdbApiKey) {
+                    try {
+                      addToast('info', 'Finishing setup...');
+                      const metadata = await getTMDBMetadata(s.id, s.media_type === 'movie' ? 'movie' : 'tv', settings.tmdbApiKey);
+                      Object.assign(skeleton, metadata);
+                    } catch (e) { }
+                  }
+                  setSelectedEntry(skeleton);
+                  setSearch('');
+                }}
               />
 
               <div className="p-8 max-w-[1800px] mx-auto w-full">
-                <LibraryGrid 
+                <LibraryGrid
                   entries={filteredLibrary}
                   onEdit={(e) => { setEditingEntry(e); setIsAddModalOpen(true); }}
                   onDelete={handleDeleteEntry}
@@ -542,7 +654,7 @@ export default function App() {
       {/* Modals & Overlays */}
       <AnimatePresence>
         {isAddModalOpen && (
-          <AddEditModal 
+          <AddEditModal
             isOpen={isAddModalOpen}
             onClose={() => setIsAddModalOpen(false)}
             onSave={handleSaveEntry}
@@ -553,7 +665,7 @@ export default function App() {
         )}
 
         {isImportModalOpen && (
-          <ImportModal 
+          <ImportModal
             isOpen={isImportModalOpen}
             onClose={() => setIsImportModalOpen(false)}
             onImport={handleImport}
@@ -565,21 +677,21 @@ export default function App() {
 
         {isSettingsOpen && (
           <div className="fixed inset-0 z-[150] flex justify-end">
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setIsSettingsOpen(false)}
-              className="absolute inset-0 bg-black/60 backdrop-blur-sm" 
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
             />
-            <motion.div 
+            <motion.div
               initial={{ x: '100%' }}
               animate={{ x: 0 }}
               exit={{ x: '100%' }}
               transition={{ type: 'spring', damping: 25, stiffness: 200 }}
               className="relative w-full max-w-[360px] h-full bg-card border-l border-white/5 shadow-2xl overflow-y-auto custom-scrollbar"
             >
-              <SettingsDrawer 
+              <SettingsDrawer
                 isOpen={true}
                 onClose={() => setIsSettingsOpen(false)}
                 settings={settings}
@@ -628,14 +740,14 @@ export default function App() {
 
         {isSurpriseChoiceOpen && (
           <div className="fixed inset-0 z-[200] flex items-center justify-center p-6">
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setIsSurpriseChoiceOpen(false)}
-              className="absolute inset-0 bg-background/90 backdrop-blur-xl" 
+              className="absolute inset-0 bg-background/90 backdrop-blur-xl"
             />
-            <motion.div 
+            <motion.div
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
@@ -646,14 +758,14 @@ export default function App() {
                 <p className="text-text-secondary text-xs uppercase tracking-widest">What are you in the mood for?</p>
               </div>
               <div className="grid grid-cols-2 gap-4">
-                <button 
+                <button
                   onClick={() => handleSurpriseMe('movie')}
                   className="flex flex-col items-center gap-4 p-6 rounded-3xl bg-white/5 hover:bg-accent hover:text-background transition-all group"
                 >
                   <Film size={32} className="group-hover:scale-110 transition-transform" />
                   <span className="font-bebas tracking-widest text-lg">Movie</span>
                 </button>
-                <button 
+                <button
                   onClick={() => handleSurpriseMe('series')}
                   className="flex flex-col items-center gap-4 p-6 rounded-3xl bg-white/5 hover:bg-accent hover:text-background transition-all group"
                 >
@@ -661,7 +773,7 @@ export default function App() {
                   <span className="font-bebas tracking-widest text-lg">Series</span>
                 </button>
               </div>
-              <button 
+              <button
                 onClick={() => setIsSurpriseChoiceOpen(false)}
                 className="text-text-secondary hover:text-white text-[10px] font-bold uppercase tracking-widest pt-4"
               >
@@ -673,14 +785,14 @@ export default function App() {
 
         {pickedEntry && (
           <div className="fixed inset-0 z-[200] flex items-center justify-center p-6">
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setPickedEntry(null)}
-              className="absolute inset-0 bg-background/90 backdrop-blur-xl" 
+              className="absolute inset-0 bg-background/90 backdrop-blur-xl"
             />
-            <motion.div 
+            <motion.div
               initial={{ scale: 0.5, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.5, opacity: 0 }}
@@ -702,7 +814,7 @@ export default function App() {
                 </div>
               </div>
               <div className="p-8 grid grid-cols-2 gap-4 bg-card">
-                <button 
+                <button
                   onClick={() => {
                     const url = pickedEntry.streamingUrl || `https://www.google.com/search?q=${encodeURIComponent(pickedEntry.title)}+stremio`;
                     window.open(url, '_blank');
@@ -712,7 +824,7 @@ export default function App() {
                 >
                   <Play size={18} fill="currentColor" /> Watch Now
                 </button>
-                <button 
+                <button
                   onClick={() => {
                     setLibrary(prev => prev.map(e => e.id === pickedEntry.id ? { ...e, isPinned: true } : e));
                     addToast('success', 'Pinned to top of list');
@@ -722,7 +834,7 @@ export default function App() {
                 >
                   Pin to Top
                 </button>
-                <button 
+                <button
                   onClick={() => handleSurpriseMe(pickedEntry.type)}
                   className="col-span-2 text-text-muted hover:text-white text-[10px] font-bold uppercase tracking-widest pt-2"
                 >

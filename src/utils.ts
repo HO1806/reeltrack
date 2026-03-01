@@ -23,7 +23,7 @@ export function generateId() {
 
 export function getGenreAverages(library: LibraryEntry[]) {
   const genreStats: Record<string, { total: number; count: number }> = {};
-  
+
   library.forEach(entry => {
     if (entry.rating.overall !== null) {
       entry.genres.forEach(genre => {
@@ -38,7 +38,7 @@ export function getGenreAverages(library: LibraryEntry[]) {
   Object.entries(genreStats).forEach(([genre, stats]) => {
     averages[genre] = stats.total / stats.count;
   });
-  
+
   return averages;
 }
 
@@ -87,7 +87,7 @@ export function updateStreak(settings: Settings, library: LibraryEntry[]): Setti
   if (!watchedToday) return settings;
 
   const newSettings = { ...settings };
-  
+
   if (lastWatchedDate === today) {
     // Already updated today
     return settings;
@@ -109,4 +109,9 @@ export function updateStreak(settings: Settings, library: LibraryEntry[]): Setti
 
   newSettings.lastWatchedDate = today;
   return newSettings;
+}
+
+export function isDuplicate(title: string, year: number, library: LibraryEntry[]) {
+  const normTitle = normalizeTitle(title);
+  return library.some(e => normalizeTitle(e.title) === normTitle && e.year === year);
 }

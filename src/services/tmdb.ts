@@ -58,7 +58,7 @@ export async function getRecommendations(id: number, type: 'movie' | 'tv', apiKe
 
 export async function getExtendedCredits(id: number, type: 'movie' | 'tv', apiKey: string) {
   const credits = await getCredits(id, type, apiKey);
-  
+
   const director = type === 'movie'
     ? credits.crew.find((c: any) => c.job === 'Director')
     : credits.crew.find((c: any) => c.job === 'Executive Producer') || credits.crew[0]; // Fallback for TV
@@ -86,7 +86,7 @@ export async function getTMDBMetadata(tmdbId: number, type: 'movie' | 'tv', apiK
     getCredits(tmdbId, type, apiKey)
   ]);
 
-  const director = type === 'movie' 
+  const director = type === 'movie'
     ? credits.crew.find((c: any) => c.job === 'Director')?.name || ''
     : details.created_by?.[0]?.name || '';
 
@@ -108,4 +108,11 @@ export async function getTMDBMetadata(tmdbId: number, type: 'movie' | 'tv', apiK
     vote_average: details.vote_average,
     streamingUrl: imdbId ? `stremio:///detail/${type === 'movie' ? 'movie' : 'series'}/${imdbId}` : ''
   };
+}
+
+export async function fetchAndEnrichTMDB(title: string, type: 'movie' | 'tv', apiKey: string) {
+  const results = await searchTMDB(title, apiKey);
+  const match = results.find((r: any) => (r.title || r.name) === title);
+  if (!match) return null;
+  return getTMDBMetadata(match.id, type, apiKey);
 }
