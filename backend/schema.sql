@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS library (
     imdbId VARCHAR(20),
     tmdbId INT,
     tmdbPopularity FLOAT,
-    vote_average FLOAT,
+    ultimate_score FLOAT,
     personalNote TEXT,
     dateAdded DATETIME,
     dateWatched DATETIME,

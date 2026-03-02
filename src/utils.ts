@@ -14,7 +14,7 @@ export function formatRuntime(minutes: number) {
 }
 
 export function normalizeTitle(title: string) {
-  return title.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return (title || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 export function generateId() {
@@ -45,33 +45,39 @@ export function getGenreAverages(library: LibraryEntry[]) {
 export function computeSmartScore(entry: LibraryEntry, library: LibraryEntry[]) {
   if (entry.status === 'watched') return 0;
 
-  let score = 50;
+  let score = 30; // Reduced base
   const genreAverages = getGenreAverages(library);
 
-  // Genre match bonus
+  // 1. Ultimate Score Bonus (Primary)
+  const ratingValue = entry.ultimate_score ? (entry.ultimate_score / 10) : 0;
+  if (ratingValue > 0) {
+    score += (ratingValue * 5); // Max 50 points from rating
+  }
+
+  // 2. Genre match bonus
   entry.genres.forEach(genre => {
     const avg = genreAverages[genre];
     if (avg) {
-      score += (avg * 5);
+      score += (avg * 2);
     }
   });
 
-  // Popularity bonus
-  if (entry.tmdbPopularity > 100) score += 10;
-  else if (entry.tmdbPopularity > 50) score += 5;
+  // 3. Popularity bonus (Reduced weight)
+  if (entry.tmdbPopularity > 100) score += 5;
+  else if (entry.tmdbPopularity > 50) score += 2;
 
-  // Recency bonus (added > 6 months ago)
+  // 4. Recency bonus (added > 6 months ago)
   const sixMonthsAgo = new Date();
   sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
   if (new Date(entry.dateAdded) < sixMonthsAgo) {
-    score += 8;
+    score += 5;
   }
 
-  // Diversity bonus (if not in top genre)
+  // 5. Diversity bonus (if not in top genre)
   const sortedGenres = Object.entries(genreAverages).sort((a, b) => b[1] - a[1]);
   const topGenre = sortedGenres[0]?.[0];
   if (topGenre && !entry.genres.includes(topGenre)) {
-    score += 5;
+    score += 3;
   }
 
   return Math.min(100, score);

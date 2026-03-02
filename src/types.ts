@@ -1,4 +1,4 @@
-export type MediaType = 'movie' | 'series';
+export type MediaType = 'movie' | 'series' | 'tv';
 export type WatchStatus = 'watched' | 'watching' | 'want_to_watch' | 'dropped';
 
 export interface Rating {
@@ -30,7 +30,6 @@ export interface LibraryEntry {
   tmdbId: number;
   tmdbPopularity: number;
   vote_average?: number;
-  imdbRating?: number;
   personalNote: string;
   dateAdded: string;
   dateWatched: string | null;
@@ -38,11 +37,16 @@ export interface LibraryEntry {
   isFavorite: boolean;
   isPinned: boolean;
   notifiedUnrated: boolean;
+  imdb_10?: number;
+  m_val?: number;
+  rc_val?: number;
+  ra_val?: number;
+  ultimate_score?: number;
 }
 
 export interface Settings {
   tmdbApiKey: string;
-  geminiApiKey: string;
+  groqApiKey: string;
   showPosters: boolean;
   defaultSort: string;
   bestStreak: number;
@@ -50,12 +54,12 @@ export interface Settings {
   lastWatchedDate: string | null;
 }
 
-export type NotificationType = 
-  | 'UNRATED_WATCHED' 
-  | 'MISSING_METADATA' 
-  | 'MISSING_IMDB_ID' 
-  | 'DUPLICATE_DETECTED' 
-  | 'IMPORT_COMPLETE' 
+export type NotificationType =
+  | 'UNRATED_WATCHED'
+  | 'MISSING_METADATA'
+  | 'MISSING_IMDB_ID'
+  | 'DUPLICATE_DETECTED'
+  | 'IMPORT_COMPLETE'
   | 'STREAK_MILESTONE';
 
 export interface Notification {
@@ -70,6 +74,7 @@ export interface Notification {
 export interface StremioImportItem {
   imdb_id: string | null;
   title: string;
+  year?: number;
   type: MediaType;
   status: WatchStatus;
 }

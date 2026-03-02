@@ -79,40 +79,53 @@ export async function getExtendedCredits(id: number, type: 'movie' | 'tv', apiKe
   };
 }
 
-export async function getTMDBMetadata(tmdbId: number, type: 'movie' | 'tv', apiKey: string) {
-  const [details, externalIds, credits] = await Promise.all([
-    getDetails(tmdbId, type, apiKey),
-    getExternalIds(tmdbId, type, apiKey),
-    getCredits(tmdbId, type, apiKey)
-  ]);
+export async function getTrending(type: 'movie' | 'tv', apiKey: string, page: number = 1) {
+  const response = await fetch(`${BASE_URL}/trending/${type}/day?api_key=${apiKey}&page=${page}`);
+  if (!response.ok) throw new Error(`TMDB Trending ${type} failed`);
+  const data = await response.json();
+  return data.results.map((item: any) => ({
+    id: item.id,
+    title: item.title || item.name,
+    year: new Date(item.release_date || item.first_air_date).getFullYear() || new Date().getFullYear(),
+    poster: item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : '',
+    backdrop: item.backdrop_path ? `https://image.tmdb.org/t/p/w780${item.backdrop_path}` : '',
+    type: type === 'movie' ? 'movie' : 'series',
+    overview: item.overview,
+    rating: item.vote_average
+  }));
+}
+
+export async function getTMDBMetadata(id: number, type: 'movie' | 'tv', apiKey: string) {
+  const details = await getDetails(id, type, apiKey);
+  const credits = await getCredits(id, type, apiKey);
+  const extIds = await getExternalIds(id, type, apiKey);
 
   const director = type === 'movie'
-    ? credits.crew.find((c: any) => c.job === 'Director')?.name || ''
+    ? credits.crew?.find((c: any) => c.job === 'Director')?.name || ''
     : details.created_by?.[0]?.name || '';
 
-  const cast = credits.cast.slice(0, 5).map((c: any) => c.name);
-  const imdbId = externalIds.imdb_id;
+  const cast = credits.cast?.slice(0, 5).map((c: any) => c.name) || [];
 
   return {
     title: details.title || details.name,
-    year: new Date(details.release_date || details.first_air_date).getFullYear(),
-    genres: details.genres.map((g: any) => g.name),
+    year: new Date(details.release_date || details.first_air_date).getFullYear() || new Date().getFullYear(),
+    genres: details.genres?.map((g: any) => g.name) || [],
     poster: details.poster_path ? `https://image.tmdb.org/t/p/w500${details.poster_path}` : '',
-    description: details.overview,
+    description: details.overview || '',
     director,
     cast,
     runtime: details.runtime || (details.episode_run_time?.[0] || 0),
     seasons: details.number_of_seasons || 0,
-    tmdbId,
-    imdbId,
-    vote_average: details.vote_average,
-    streamingUrl: imdbId ? `stremio:///detail/${type === 'movie' ? 'movie' : 'series'}/${imdbId}` : ''
+    tmdbId: id,
+    imdbId: extIds.imdb_id || '',
+    tmdbPopularity: details.popularity || 0,
+    vote_average: details.vote_average || 0,
   };
 }
 
 export async function fetchAndEnrichTMDB(title: string, type: 'movie' | 'tv', apiKey: string) {
-  const results = await searchTMDB(title, apiKey);
-  const match = results.find((r: any) => (r.title || r.name) === title);
+  const searchResults = await searchTMDB(title, apiKey);
+  const match = searchResults.find((r: any) => r.media_type === type);
   if (!match) return null;
   return getTMDBMetadata(match.id, type, apiKey);
 }

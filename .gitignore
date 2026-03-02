@@ -6,3 +6,10 @@ coverage/
 *.log
 .env*
 !.env.example
+groq api
+unused
+__pycache__/
+.agents/
+.system_generated/
+assets/
+index.html

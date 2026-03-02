@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { LibraryEntry, Settings, Suggestion, WatchStatus, Notification } from './types';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { LibraryEntry, Settings, Suggestion, WatchStatus, Notification, MediaType } from './types';
 import { Navbar } from './components/Navbar';
 import { FilterBar } from './components/FilterBar';
 import { LibraryGrid } from './components/LibraryGrid';
@@ -8,34 +8,32 @@ import { ImportModal } from './components/ImportModal';
 import { SettingsDrawer } from './components/SettingsDrawer';
 import { StatsDashboard } from './components/StatsDashboard';
 import { Suggestions } from './components/Suggestions';
+import { BulkAddModal } from './components/BulkAddModal';
 import { MovieDetails } from './components/MovieDetails';
 import { ToastContainer, ToastMessage } from './components/Toast';
 import { generateId, normalizeTitle, computeSmartScore, updateStreak, isDuplicate } from './utils';
 import { getTMDBMetadata, searchTMDB, fetchAndEnrichTMDB } from './services/tmdb';
 import { api } from './services/api';
 import { motion, AnimatePresence } from 'motion/react';
-import { Play, X, Search, Popcorn, Film, Plus, Star, Tv, RotateCcw, Sparkles } from 'lucide-react';
+import { Play, X, Search, Popcorn, Film, Plus, Star, Tv, RotateCcw, Sparkles, Dices } from 'lucide-react';
 import { cn } from './utils';
 
 export default function App() {
   // --- State ---
-  const [library, setLibrary] = useState<LibraryEntry[]>(() => {
-    const saved = localStorage.getItem('reeltrack_library');
-    return saved ? JSON.parse(saved) : [];
-  });
+  // Library loads exclusively from SQL database — no localStorage
+  const [library, setLibrary] = useState<LibraryEntry[]>([]);
 
-  const [settings, setSettings] = useState<Settings>(() => {
-    const saved = localStorage.getItem('reeltrack_settings');
-    return saved ? JSON.parse(saved) : {
-      tmdbApiKey: '',
-      geminiApiKey: '',
-      showPosters: true,
-      defaultSort: 'smartScore',
-      bestStreak: 0,
-      currentStreak: 0,
-      lastWatchedDate: null
-    };
+  const [settings, setSettings] = useState<Settings>({
+    tmdbApiKey: '',
+    groqApiKey: '',
+    showPosters: true,
+    defaultSort: 'smartScore',
+    bestStreak: 0,
+    currentStreak: 0,
+    lastWatchedDate: null
   });
+  // Flag to know if settings are loaded from DB
+  const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
 
   const [notifications, setNotifications] = useState<Notification[]>(() => {
     const saved = localStorage.getItem('reeltrack_notifications');
@@ -48,6 +46,7 @@ export default function App() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [genreFilter, setGenreFilter] = useState('all');
   const [starFilter, setStarFilter] = useState<number | 'all'>('all');
+  const [starDirection, setStarDirection] = useState<'above' | 'below'>('above');
   const [sortBy, setSortBy] = useState(settings.defaultSort || 'smartScore');
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -62,20 +61,37 @@ export default function App() {
   const [selectedEntry, setSelectedEntry] = useState<LibraryEntry | null>(null);
   const [searchSuggestions, setSearchSuggestions] = useState<any[]>([]);
   const [isSearchingAutocomplete, setIsSearchingAutocomplete] = useState(false);
+  const [isInitialSync, setIsInitialSync] = useState(true);
+  const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
+  // Flag to prevent infinite sync loop when library is updated from DB data
+  const syncFromDB = useRef(false);
+  // Tracks items that failed TMDB extraction to prevent infinite looping
+  const failedEnrichmentIds = useRef<Set<string>>(new Set());
 
-  // --- MySQL Sync ---
+  // --- MySQL Load & Sync (DB is single source of truth for library AND settings) ---
   useEffect(() => {
-    const syncData = async () => {
+    const loadFromDB = async () => {
       try {
-        const syncedLibrary = await api.syncLibrary(library);
-        if (JSON.stringify(syncedLibrary) !== JSON.stringify(library)) {
-          setLibrary(syncedLibrary);
+        const [dbLibrary, dbSettings] = await Promise.all([
+          api.getLibrary(),
+          api.getSettings()
+        ]);
+        setLibrary(dbLibrary);
+        if (dbSettings && Object.keys(dbSettings).length > 0) {
+          setSettings(prev => ({ ...prev, ...dbSettings } as Settings));
+          if (dbSettings.defaultSort) {
+            setSortBy(dbSettings.defaultSort);
+          }
         }
+        setIsSettingsLoaded(true);
       } catch (err) {
-        console.warn('MySQL Sync unavailable:', err);
+        console.warn('Failed to load data from DB:', err);
+        setIsSettingsLoaded(true);
+      } finally {
+        setIsInitialSync(false);
       }
     };
-    syncData();
+    loadFromDB();
   }, []);
 
   // --- Autocomplete ---
@@ -100,16 +116,37 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [search, settings.tmdbApiKey]);
 
-  // --- Storage ---
+  // --- DB Sync on library changes ---
+  // Library changes are pushed to DB; DB is the single source of truth (no localStorage)
   useEffect(() => {
-    localStorage.setItem('reeltrack_library', JSON.stringify(library));
+    // Skip the initial empty state and the first DB load
+    if (library.length === 0 || isInitialSync) return;
 
-    // Auto-sync to MySQL on changes
+    // If this update came from a DB read, skip re-pushing to avoid loops
+    if (syncFromDB.current) {
+      syncFromDB.current = false;
+      setIsSavedFlash(true);
+      const timer = setTimeout(() => setIsSavedFlash(false), 1500);
+      return () => clearTimeout(timer);
+    }
+
+    // Push all changes to DB
     const timeout = setTimeout(async () => {
       try {
-        await api.syncLibrary(library);
-      } catch (e) { }
-    }, 2000);
+        console.log('Pushing library changes to DB (Items:', library.length, ')');
+        const updatedFromDB = await api.syncLibrary(library);
+
+        // If the DB consolidated items (due to unique constraints), update local library
+        if (updatedFromDB && updatedFromDB.length !== library.length) {
+          console.log('DB consolidated items. Updating local state from', library.length, 'to', updatedFromDB.length);
+          syncFromDB.current = true;
+          setLibrary(updatedFromDB);
+        }
+        console.log('Successfully synced library to DB!');
+      } catch (e) {
+        console.error('CRITICAL: Library push intercept failed:', e);
+      }
+    }, 1500);
 
     setIsSavedFlash(true);
     const timer = setTimeout(() => setIsSavedFlash(false), 1500);
@@ -119,13 +156,89 @@ export default function App() {
     };
   }, [library]);
 
+  // Settings use the database (fallback sync)
   useEffect(() => {
-    localStorage.setItem('reeltrack_settings', JSON.stringify(settings));
-  }, [settings]);
+    if (!isSettingsLoaded) return;
+
+    const timeout = setTimeout(async () => {
+      try {
+        await api.updateSettings(settings);
+      } catch (e) {
+        console.error('Failed to sync settings', e);
+      }
+    }, 1000);
+
+    return () => clearTimeout(timeout);
+  }, [settings, isSettingsLoaded]);
 
   useEffect(() => {
     localStorage.setItem('reeltrack_notifications', JSON.stringify(notifications));
   }, [notifications]);
+
+  // --- Background Enrichment Queue ---
+  useEffect(() => {
+    if (!settings.tmdbApiKey || library.length === 0) return;
+
+    // Find the first item that needs enrichment (missing poster OR missing ultimate_score)
+    const needsEnrichment = library.find(e =>
+      !failedEnrichmentIds.current.has(e.id) &&
+      (e.poster === '' || e.ultimate_score === undefined || e.ultimate_score === null)
+    );
+
+    if (!needsEnrichment) return;
+
+    const timer = setTimeout(async () => {
+      try {
+        let updatedEntry = null;
+
+        // Has IMDb ID -> Use backend fetcher (which also executes Python Rater logic)
+        if (needsEnrichment.imdbId) {
+          const enriched = await api.fetchFromImdb(needsEnrichment.imdbId, settings.tmdbApiKey);
+          if (enriched.success && enriched.entry) {
+            updatedEntry = enriched.entry;
+          }
+        }
+        // Missing IMDb ID -> Fallback directly to title search over frontend TMDB
+        else {
+          const typeForTMDB = needsEnrichment.type === 'movie' ? 'movie' : 'tv';
+          const fallbackData = await fetchAndEnrichTMDB(needsEnrichment.title, typeForTMDB, settings.tmdbApiKey);
+          if (fallbackData) {
+            updatedEntry = fallbackData;
+          }
+        }
+
+        if (updatedEntry) {
+          setLibrary(prev => prev.map(e => {
+            if (e.id === needsEnrichment.id) {
+              // Preserve status and other user-managed state from the original entry
+              const {
+                status,
+                dateAdded,
+                dateWatched,
+                isFavorite,
+                isPinned,
+                notifiedUnrated,
+                personalNote,
+                rating,
+                ...metadata
+              } = updatedEntry;
+              return { ...e, ...metadata };
+            }
+            return e;
+          }));
+        } else {
+          failedEnrichmentIds.current.add(needsEnrichment.id);
+          setLibrary(prev => [...prev]); // Trigger re-render to advance queue
+        }
+      } catch (e) {
+        console.error("Enrichment queue error", e);
+        failedEnrichmentIds.current.add(needsEnrichment.id);
+        setLibrary(prev => [...prev]);
+      }
+    }, 2000); // 2 second delay between queries to accommodate python rater & TMDB
+
+    return () => clearTimeout(timer);
+  }, [library, settings.tmdbApiKey]);
 
   // --- Streak & Notifications Logic ---
   useEffect(() => {
@@ -173,11 +286,24 @@ export default function App() {
     setToasts(prev => prev.filter(t => t.id !== id));
   };
 
+  // Helper: fire-and-forget score calculation for a single entry
+  const autoRateEntry = (entry: LibraryEntry) => {
+    if (!entry.imdbId || entry.ultimate_score) return; // Skip if no IMDb ID or already scored
+    api.rateSingle(entry.id, entry.imdbId).then(score => {
+      if (score) {
+        setLibrary(prev => prev.map(e => e.id === entry.id ? { ...e, ...score } : e));
+        addToast('success', `★ Score ready: ${entry.title} — ${(score.ultimate_score / 10).toFixed(1)}`);
+      }
+    }).catch(() => { });
+  };
+
   // --- Library Actions ---
   const handleSaveEntry = (entry: LibraryEntry) => {
     if (editingEntry) {
       setLibrary(prev => prev.map(e => e.id === entry.id ? entry : e));
       addToast('success', 'Entry updated ✓');
+      // Re-rate if imdbId changed or score missing
+      if (entry.imdbId && !entry.ultimate_score) autoRateEntry(entry);
     } else {
       if (isDuplicate(entry.title, entry.year, library)) {
         addToast('error', `'${entry.title}' is already in your library!`);
@@ -193,15 +319,25 @@ export default function App() {
       }
       setLibrary(prev => [entry, ...prev]);
       addToast('success', 'Entry added ✓');
+      // Auto-rate new entries in background
+      autoRateEntry(entry);
     }
     setIsAddModalOpen(false);
     setEditingEntry(null);
   };
 
-  const handleDeleteEntry = (id: string) => {
+  const handleDeleteEntry = async (id: string) => {
     if (confirm('Are you sure you want to delete this entry?')) {
-      setLibrary(prev => prev.filter(e => e.id !== id));
-      addToast('info', 'Entry deleted');
+      try {
+        await api.deleteEntry(id);
+        // Only update local state if server call succeeds
+        syncFromDB.current = true; // Use this flag to prevent immediate re-sync of the smaller list
+        setLibrary(prev => prev.filter(e => e.id !== id));
+        addToast('info', 'Entry deleted ✓');
+      } catch (err: any) {
+        console.error('Delete failed:', err);
+        addToast('error', `Failed to delete from database: ${err.message || 'Unknown error'}`);
+      }
     }
   };
 
@@ -248,10 +384,23 @@ export default function App() {
     }));
   };
 
-  const handleImport = (newEntries: LibraryEntry[]) => {
-    setLibrary(prev => [...newEntries, ...prev]);
-    setIsImportModalOpen(false);
-    addToast('success', `Import complete: ${newEntries.length} added`);
+  const handleImport = async (newEntries: LibraryEntry[]) => {
+    try {
+      // Form the new combined library
+      const updatedLibrary = [...newEntries, ...library];
+
+      // Explicitly sync the newly merged array directly with the backend, bypassing the timeout
+      await api.syncLibrary(updatedLibrary);
+
+      // Now set state, safe from wipeouts
+      syncFromDB.current = true;
+      setLibrary(updatedLibrary);
+      setIsImportModalOpen(false);
+      addToast('success', `Import complete: ${newEntries.length} added`);
+    } catch (err) {
+      console.error('CRITICAL: Bulk Import Failed', err);
+      addToast('error', 'Failed to save imported items to database!');
+    }
   };
 
   const handleSelectSuggestion = async (suggestion: Suggestion) => {
@@ -369,7 +518,6 @@ export default function App() {
       tmdbId: item.id,
       tmdbPopularity: 0,
       vote_average: item.rating || 0,
-      imdbRating: 0,
       personalNote: '',
       dateAdded: new Date().toISOString(),
       dateWatched: null,
@@ -390,7 +538,7 @@ export default function App() {
     addToast('success', `${item.title} added to library`);
   };
 
-  const handleSurpriseMe = (typeChoice?: 'movie' | 'series') => {
+  const handleSurpriseMe = (typeChoice?: MediaType) => {
     if (!typeChoice) {
       setIsSurpriseChoiceOpen(true);
       return;
@@ -431,6 +579,35 @@ export default function App() {
     setNotifications(prev => prev.map(n => ({ ...n, read: true })));
   };
 
+  const handleRunRater = async () => {
+    setIsSavedFlash(true);
+    try {
+      addToast('info', 'Custom Rater started...');
+      const result = await api.runBatchRater();
+      if (result.processed > 0) {
+        setNotifications([{
+          id: generateId(),
+          type: 'IMPORT_COMPLETE',
+          message: `★ Rater finished processing ${result.processed} items!`,
+          entryId: null,
+          read: false,
+          createdAt: new Date().toISOString()
+        }, ...notifications]);
+
+        // Refresh library from server
+        const updated = await api.getLibrary();
+        setLibrary(updated);
+        addToast('success', `Rater processed ${result.processed} titles`);
+      } else {
+        addToast('info', 'No new titles to rate');
+      }
+    } catch (e: any) {
+      addToast('error', `Rater failed: ${e.message}`);
+    } finally {
+      setTimeout(() => setIsSavedFlash(false), 2000);
+    }
+  };
+
   // --- Filtering & Sorting ---
   const genres = useMemo(() => {
     const set = new Set<string>();
@@ -444,20 +621,44 @@ export default function App() {
 
   const filteredLibrary = useMemo(() => {
     let list = library.filter(e => {
-      const matchesSearch = e.title.toLowerCase().includes(search.toLowerCase());
-      const matchesType = typeFilter === 'all' || e.type === typeFilter;
-      const matchesStatus = statusFilter === 'all' || e.status === statusFilter;
-      const matchesGenre = genreFilter === 'all' || (Array.isArray(e.genres) && e.genres.includes(genreFilter));
-      const matchesStar = starFilter === 'all' || (e.rating.overall || 0) >= starFilter;
+      // 1. Unify 'tv' and 'series' so the UI only has to deal with two binary types
+      const isMovie = e.type === 'movie';
+      const isSeries = e.type === 'series' || e.type === 'tv';
+      const isWatched = e.status === 'watched';
 
-      if (activeTab === 'movies') return matchesSearch && e.type === 'movie' && e.status !== 'watched' && matchesGenre;
-      if (activeTab === 'series') return matchesSearch && e.type === 'series' && e.status !== 'watched' && matchesGenre;
-      if (activeTab === 'favorites') return matchesSearch && e.status === 'watched' && (e.rating.overall || 0) >= 4.5 && matchesGenre;
-      if (activeTab === 'history') return matchesSearch && e.status === 'watched' && matchesType && matchesGenre && matchesStar;
-      if (activeTab === 'suggestions') return false; // Handled separately
-      if (activeTab === 'stats') return false; // Handled separately
+      // 2. Base Search & Genre Filters (Applies globally everywhere)
+      if (!e.title.toLowerCase().includes(search.toLowerCase())) return false;
+      if (genreFilter !== 'all' && !(Array.isArray(e.genres) && e.genres.includes(genreFilter))) return false;
 
-      return false;
+      // 3. Dropdown Type Filter
+      if (typeFilter === 'movie' && !isMovie) return false;
+      if (typeFilter === 'series' && !isSeries) return false;
+
+      // 4. Dropdown Star Filter (Ultimate Score Logic)
+      const score = Math.round(e.ultimate_score || 0);
+
+      const passesStar = starFilter === 'all' || (
+        starDirection === 'above'
+          ? score >= (starFilter as number)
+          : score < (starFilter as number)
+      );
+      if (!passesStar) return false;
+
+      // 5. Deterministic Tab Routing
+      switch (activeTab) {
+        case 'movies':
+          return isMovie && !isWatched; // Unwatched movies only
+        case 'series':
+          return isSeries && !isWatched; // Unwatched series only
+        case 'history':
+          return isWatched; // Watched anything
+        case 'favorites':
+          return isWatched && (e.rating.overall || 0) >= 4.5; // Watched high ratings
+        case 'suggestions':
+        case 'stats':
+        default:
+          return false; // Handled directly by component wrappers, hide from grid
+      }
     });
 
     // Smart Sort & Pinned logic
@@ -467,7 +668,11 @@ export default function App() {
 
       if (sortBy === 'smartScore') return computeSmartScore(b, library) - computeSmartScore(a, library);
       if (sortBy === 'dateAdded') return new Date(b.dateAdded).getTime() - new Date(a.dateAdded).getTime();
-      if (sortBy === 'rating') return (b.rating.overall || 0) - (a.rating.overall || 0);
+      if (sortBy === 'rating') {
+        const ratingA = a.ultimate_score ? (a.ultimate_score / 10) : 0;
+        const ratingB = b.ultimate_score ? (b.ultimate_score / 10) : 0;
+        return ratingB - ratingA;
+      }
       if (sortBy === 'title') return a.title.localeCompare(b.title);
       if (sortBy === 'year') return b.year - a.year;
       if (sortBy === 'recentlyWatched') {
@@ -477,7 +682,7 @@ export default function App() {
       }
       return 0;
     });
-  }, [library, search, typeFilter, statusFilter, genreFilter, sortBy, activeTab]);
+  }, [library, search, typeFilter, statusFilter, genreFilter, sortBy, activeTab, starFilter, starDirection]);
 
   // --- Keyboard Shortcuts ---
   useEffect(() => {
@@ -512,6 +717,7 @@ export default function App() {
         onAdd={() => { setEditingEntry(null); setIsAddModalOpen(true); }}
         onSurprise={handleSurpriseMe}
         onImport={() => setIsImportModalOpen(true)}
+        onBulkAdd={() => setIsBulkModalOpen(true)}
         onSettings={() => setIsSettingsOpen(true)}
         notifications={notifications}
         onMarkRead={handleMarkRead}
@@ -519,7 +725,7 @@ export default function App() {
         isSaved={isSavedFlash}
       />
 
-      <main className="pt-[60px] min-h-screen flex flex-col">
+      <main className="pt-nav min-h-screen flex flex-col">
         <AnimatePresence mode="wait">
           {selectedEntry ? (
             <motion.div
@@ -527,6 +733,7 @@ export default function App() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
+              className="flex-1"
             >
               <MovieDetails
                 entry={selectedEntry}
@@ -536,46 +743,49 @@ export default function App() {
                 library={library}
               />
             </motion.div>
-          ) : activeTab === 'stats' ? (
-            <motion.div
-              key="stats"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="p-8"
-            >
-              <StatsDashboard library={library} />
-            </motion.div>
           ) : activeTab === 'suggestions' ? (
             <motion.div
               key="suggestions"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="p-8"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="px-4 sm:px-8 pt-2 pb-8 flex-1"
             >
               <Suggestions
                 library={library}
-                geminiApiKey={settings.geminiApiKey}
+                groqApiKey={settings.groqApiKey}
+                tmdbApiKey={settings.tmdbApiKey}
                 onAdd={handleAddFromSuggestion}
                 onSelect={handleSelectSuggestion}
                 onToast={addToast}
               />
             </motion.div>
+          ) : activeTab === 'stats' ? (
+            <motion.div
+              key="stats"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="px-4 sm:px-8 pt-2 pb-8 flex-1 overflow-y-auto"
+            >
+              <StatsDashboard library={library} />
+            </motion.div>
           ) : (
             <motion.div
-              key="library"
+              key="library-view"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="flex flex-col"
+              className="flex flex-col flex-1"
             >
+
               <FilterBar
                 search={search} setSearch={setSearch}
                 type={typeFilter} setType={setTypeFilter}
                 status={statusFilter} setStatus={setStatusFilter}
                 genre={genreFilter} setGenre={setGenreFilter}
                 star={starFilter} setStar={setStarFilter}
+                starDirection={starDirection} setStarDirection={setStarDirection}
                 sortBy={sortBy} setSortBy={setSortBy}
                 genres={genres}
                 totalCount={library.length}
@@ -592,7 +802,6 @@ export default function App() {
                     return;
                   }
 
-                  // Create skeleton
                   const skeleton: LibraryEntry = {
                     id: generateId(),
                     title: s.title || s.name,
@@ -636,7 +845,7 @@ export default function App() {
                 }}
               />
 
-              <div className="p-8 max-w-[1800px] mx-auto w-full">
+              <div className="px-2 sm:px-4 pb-12 max-w-content-max mx-auto w-full">
                 <LibraryGrid
                   entries={filteredLibrary}
                   onEdit={(e) => { setEditingEntry(e); setIsAddModalOpen(true); }}
@@ -648,6 +857,8 @@ export default function App() {
                   onFindSimilar={setSimilarSource}
                   onClick={setSelectedEntry}
                   activeTab={activeTab}
+                  isSearching={search.length > 0}
+                  isLoading={isInitialSync}
                 />
               </div>
             </motion.div>
@@ -675,6 +886,19 @@ export default function App() {
             onImport={handleImport}
             tmdbApiKey={settings.tmdbApiKey}
             existingLibrary={library}
+            onToast={addToast}
+          />
+        )}
+
+        {isBulkModalOpen && (
+          <BulkAddModal
+            isOpen={isBulkModalOpen}
+            onClose={() => setIsBulkModalOpen(false)}
+            onSuccess={async () => {
+              const updated = await api.getLibrary();
+              setLibrary(updated);
+            }}
+            tmdbApiKey={settings.tmdbApiKey}
             onToast={addToast}
           />
         )}
@@ -731,11 +955,17 @@ export default function App() {
                   };
                   input.click();
                 }}
-                onClearData={() => {
-                  setLibrary([]);
-                  setNotifications([]);
-                  addToast('info', 'All library data cleared');
-                  setIsSettingsOpen(false);
+                onClearData={async () => {
+                  if (!confirm('Are you sure? This will PERMANENTLY delete everything from your library AND the database!')) return;
+                  try {
+                    await api.clearLibrary();
+                    setLibrary([]);
+                    setNotifications([]);
+                    addToast('info', 'All library data cleared permanently');
+                    setIsSettingsOpen(false);
+                  } catch (e: any) {
+                    addToast('error', `Failed to clear backend: ${e.message}`);
+                  }
                 }}
               />
             </motion.div>

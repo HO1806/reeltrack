@@ -11,7 +11,7 @@ export const StatsDashboard: React.FC<StatsDashboardProps> = ({ library }) => {
   const total = library.length;
   const movies = library.filter(e => e.type === 'movie').length;
   const series = library.filter(e => e.type === 'series').length;
-  
+
   const totalMinutes = library
     .filter(e => e.status === 'watched')
     .reduce((acc, curr) => {
@@ -52,7 +52,13 @@ export const StatsDashboard: React.FC<StatsDashboardProps> = ({ library }) => {
     .slice(0, 5);
 
   return (
-    <div className="p-6 space-y-8 animate-fade-in max-w-7xl mx-auto">
+    <div className="px-2 sm:px-4 py-4 space-y-10 animate-fade-in max-w-7xl mx-auto">
+      {/* Section Header */}
+      <div className="flex items-center gap-6">
+        <h2 className="font-bebas text-5xl tracking-wider text-white">Your Stats</h2>
+        <div className="h-[2px] flex-1 bg-gradient-to-r from-accent/20 to-transparent" />
+      </div>
+
       {/* Hero Row */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
         {[
@@ -61,13 +67,13 @@ export const StatsDashboard: React.FC<StatsDashboardProps> = ({ library }) => {
           { label: 'Series', value: series, icon: Tv, color: 'text-purple-500' },
           { label: 'Hours Watched', value: `${hours}h ${mins}m`, icon: Clock, color: 'text-green-500' },
         ].map((stat, i) => (
-          <div key={i} className="glass-panel p-6 rounded-3xl flex items-center gap-4">
-            <div className={`p-3 rounded-2xl bg-white/5 ${stat.color}`}>
-              <stat.icon size={24} />
+          <div key={i} className="stat-card group">
+            <div className={`p-4 rounded-2xl bg-white/[0.04] ${stat.color} transition-all duration-500 group-hover:scale-105`}>
+              <stat.icon size={26} />
             </div>
             <div>
-              <div className="text-[10px] font-bold uppercase tracking-widest text-text-secondary">{stat.label}</div>
-              <div className="text-2xl font-bebas tracking-wide">{stat.value}</div>
+              <div className="text-[10px] font-bold uppercase tracking-widest text-text-secondary mb-1">{stat.label}</div>
+              <div className="text-3xl font-bebas tracking-wide">{stat.value}</div>
             </div>
           </div>
         ))}
@@ -81,16 +87,23 @@ export const StatsDashboard: React.FC<StatsDashboardProps> = ({ library }) => {
               <Star size={16} /> Top Rated Movies
             </h3>
             <div className="space-y-2">
-              {topMovies.map(m => (
+              {topMovies.map((m, idx) => (
                 <div key={m.id} className="glass-panel p-4 rounded-2xl flex items-center justify-between group hover:border-accent/30 transition-all">
                   <div className="flex items-center gap-3">
-                    {m.poster && <img src={m.poster} className="w-8 h-12 rounded object-cover" />}
+                    <div className={`w-7 h-7 rounded-lg flex items-center justify-center font-bebas text-sm shrink-0 ${idx === 0 ? 'bg-accent/20 text-accent shadow-[0_0_12px_rgba(245,197,24,0.3)]' :
+                      idx === 1 ? 'bg-white/10 text-white/60' :
+                        idx === 2 ? 'bg-orange-500/10 text-orange-400' :
+                          'bg-white/5 text-text-muted'
+                      }`}>{idx + 1}</div>
+                    {m.poster && <img src={m.poster} className="w-8 h-12 rounded-lg object-cover" />}
                     <div>
                       <div className="text-sm font-bold group-hover:text-accent transition-colors">{m.title}</div>
                       <div className="text-[10px] text-text-secondary">{m.year}</div>
                     </div>
                   </div>
-                  <div className="text-accent font-bebas text-xl">{m.rating.overall?.toFixed(1)}</div>
+                  <div className="text-accent font-bebas text-xl">
+                    {m.ultimate_score ? Math.round(m.ultimate_score) : '-'}
+                  </div>
                 </div>
               ))}
             </div>
@@ -101,16 +114,23 @@ export const StatsDashboard: React.FC<StatsDashboardProps> = ({ library }) => {
               <Star size={16} /> Top Rated Series
             </h3>
             <div className="space-y-2">
-              {topSeries.map(s => (
+              {topSeries.map((s, idx) => (
                 <div key={s.id} className="glass-panel p-4 rounded-2xl flex items-center justify-between group hover:border-accent/30 transition-all">
                   <div className="flex items-center gap-3">
-                    {s.poster && <img src={s.poster} className="w-8 h-12 rounded object-cover" />}
+                    <div className={`w-7 h-7 rounded-lg flex items-center justify-center font-bebas text-sm shrink-0 ${idx === 0 ? 'bg-accent/20 text-accent shadow-[0_0_12px_rgba(245,197,24,0.3)]' :
+                      idx === 1 ? 'bg-white/10 text-white/60' :
+                        idx === 2 ? 'bg-orange-500/10 text-orange-400' :
+                          'bg-white/5 text-text-muted'
+                      }`}>{idx + 1}</div>
+                    {s.poster && <img src={s.poster} className="w-8 h-12 rounded-lg object-cover" />}
                     <div>
                       <div className="text-sm font-bold group-hover:text-accent transition-colors">{s.title}</div>
                       <div className="text-[10px] text-text-secondary">{s.year}</div>
                     </div>
                   </div>
-                  <div className="text-accent font-bebas text-xl">{s.rating.overall?.toFixed(1)}</div>
+                  <div className="text-accent font-bebas text-xl">
+                    {s.ultimate_score ? Math.round(s.ultimate_score) : '-'}
+                  </div>
                 </div>
               ))}
             </div>
@@ -125,8 +145,8 @@ export const StatsDashboard: React.FC<StatsDashboardProps> = ({ library }) => {
               <TrendingUp size={18} /> Status Distribution
             </h3>
             <div className="flex flex-col sm:flex-row items-center gap-12">
-              <div 
-                className="w-32 h-32 rounded-full relative shrink-0"
+              <div
+                className="w-40 h-40 rounded-full relative shrink-0"
                 style={{
                   background: `conic-gradient(
                     #22c55e 0% ${(statusCounts.watched / total) * 100}%,
@@ -136,8 +156,9 @@ export const StatsDashboard: React.FC<StatsDashboardProps> = ({ library }) => {
                   )`
                 }}
               >
-                <div className="absolute inset-4 bg-card rounded-full flex items-center justify-center">
-                  <span className="font-bebas text-xl">{total}</span>
+                <div className="absolute inset-5 bg-card rounded-full flex flex-col items-center justify-center shadow-inner">
+                  <span className="text-[8px] font-bold uppercase tracking-widest text-text-muted -mb-0.5">Total</span>
+                  <span className="font-bebas text-2xl">{total}</span>
                 </div>
               </div>
               <div className="space-y-2 flex-1 w-full">
@@ -169,9 +190,9 @@ export const StatsDashboard: React.FC<StatsDashboardProps> = ({ library }) => {
                     <span>{genre}</span>
                     <span className="text-text-secondary">{count}</span>
                   </div>
-                  <div className="w-full bg-white/5 h-2 rounded-full overflow-hidden">
-                    <div 
-                      className="bg-accent h-full rounded-full" 
+                  <div className="w-full bg-white/[0.04] h-2.5 rounded-full overflow-hidden">
+                    <div
+                      className="bg-gradient-to-r from-accent/80 to-accent h-full rounded-full transition-all duration-700 hover:brightness-125"
                       style={{ width: `${(count / (topGenres[0]?.[1] || 1)) * 100}%` }}
                     />
                   </div>
@@ -188,12 +209,16 @@ export const StatsDashboard: React.FC<StatsDashboardProps> = ({ library }) => {
                 const count = ratings[r] || 0;
                 const maxCount = Math.max(...Object.values(ratings), 1);
                 return (
-                  <div key={r} className="flex-1 flex flex-col items-center gap-2 group">
-                    <div 
-                      className="w-full bg-accent/20 group-hover:bg-accent rounded-t-lg transition-all"
-                      style={{ height: `${(count / maxCount) * 100}%` }}
+                  <div key={r} className="flex-1 flex flex-col items-center gap-2 group relative">
+                    {/* Hover count label */}
+                    <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-accent text-background text-[9px] font-bold px-2 py-0.5 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none whitespace-nowrap shadow-lg">
+                      {count}
+                    </div>
+                    <div
+                      className="w-full bg-accent/[0.15] group-hover:bg-accent rounded-t-lg transition-all duration-500 animate-bar-grow"
+                      style={{ height: `${Math.max((count / maxCount) * 100, 4)}%` }}
                     />
-                    <span className="text-[10px] font-bold text-text-secondary">{r}</span>
+                    <span className="text-[10px] font-bold text-text-secondary group-hover:text-accent transition-colors">{r}</span>
                   </div>
                 );
               })}

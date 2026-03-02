@@ -1,9 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { X, Search, Star, Plus, Minus, Calendar, Clock, Tv, Film, ExternalLink, Loader2 } from 'lucide-react';
+import { Search, Star, Plus, Minus, Calendar, Clock, Tv, Film, Play, Sparkles, Loader2, Save, Info, Tag, Hash } from 'lucide-react';
 import { LibraryEntry, MediaType, WatchStatus } from '../types';
 import { cn, generateId } from '../utils';
-import { searchTMDB, getTMDBMetadata } from '../services/tmdb';
+import { searchTMDB, getExternalIds } from '../services/tmdb';
+import { api } from '../services/api';
 import { motion, AnimatePresence } from 'motion/react';
+import { Button } from './ui/Button';
+import { Input } from './ui/Input';
 
 interface AddEditModalProps {
   isOpen: boolean;
@@ -21,6 +24,7 @@ export const AddEditModal: React.FC<AddEditModalProps> = ({
   const [formData, setFormData] = useState<Partial<LibraryEntry>>({});
   const [tmdbResults, setTmdbResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [isScoring, setIsScoring] = useState(false);
 
   useEffect(() => {
     if (editingEntry) {
@@ -65,17 +69,70 @@ export const AddEditModal: React.FC<AddEditModalProps> = ({
 
   const selectTmdbResult = async (result: any) => {
     setTmdbResults([]);
-    onToast('info', 'Fetching full metadata...');
+    onToast('info', 'Enriching data through cinematic channels...');
+    setIsScoring(true);
     try {
-      const metadata = await getTMDBMetadata(result.id, result.media_type, tmdbApiKey);
-      setFormData(prev => ({
-        ...prev,
-        ...metadata,
-        type: result.media_type === 'tv' ? 'series' : 'movie'
-      }));
-      onToast('success', 'Metadata fetched ✓');
-    } catch (e) {
-      onToast('error', 'Failed to fetch full metadata');
+      const extIds = await getExternalIds(result.id, result.media_type, tmdbApiKey);
+      const imdbId = extIds.imdb_id;
+
+      if (!imdbId) {
+        onToast('error', 'IMDb index not found for this masterpiece.');
+        setIsScoring(false);
+        return;
+      }
+
+      const enrichedData = await api.fetchFromImdb(imdbId, tmdbApiKey);
+      const enriched = enrichedData.entry;
+
+      if (!enriched) {
+        onToast('error', 'Enrichment data sync failed.');
+        setIsScoring(false);
+        return;
+      }
+
+      console.log('[ReelTrack] Enriched entry from backend:', JSON.stringify(enriched, null, 2));
+
+      setFormData(prev => {
+        const next = { ...prev };
+        if (enriched.title) next.title = enriched.title;
+        if (enriched.type) next.type = enriched.type as any;
+        if (enriched.year) next.year = parseInt(String(enriched.year));
+        if (enriched.runtime) next.runtime = parseInt(String(enriched.runtime));
+        if (enriched.poster) next.poster = enriched.poster;
+        if (enriched.description) next.description = enriched.description;
+        if (enriched.director) next.director = enriched.director;
+        if (enriched.genres) {
+          next.genres = Array.isArray(enriched.genres)
+            ? enriched.genres
+            : String(enriched.genres).split(',').map((s: any) => s.trim()).filter(Boolean);
+        }
+        if (enriched.cast) {
+          next.cast = Array.isArray(enriched.cast) ? enriched.cast : [String(enriched.cast)];
+        }
+        if (enriched.streamingUrl) next.streamingUrl = enriched.streamingUrl;
+        if (enriched.tmdbPopularity) next.tmdbPopularity = enriched.tmdbPopularity;
+        if (enriched.vote_average) next.vote_average = enriched.vote_average;
+        if (enriched.seasons) next.seasons = enriched.seasons;
+        next.imdbId = imdbId;
+        next.tmdbId = enriched.tmdbId || result.id;
+        next.ultimate_score = enriched.ultimate_score;
+        next.imdb_10 = enriched.imdb_10;
+        next.m_val = enriched.m_val;
+        next.rc_val = enriched.rc_val;
+        next.ra_val = enriched.ra_val;
+        console.log('[ReelTrack] Updated form state:', JSON.stringify(next, null, 2));
+        return next;
+      });
+
+      if (enriched.ultimate_score) {
+        onToast('success', `Analytics Complete: ${(enriched.ultimate_score / 10).toFixed(1)} ★ Ultimate Score`);
+      } else {
+        onToast('success', 'Metadata synchronized successfully.');
+      }
+      setIsScoring(false);
+    } catch (e: any) {
+      onToast('error', e.message || 'Synchronization failed.');
+      setIsScoring(false);
     }
   };
 
@@ -86,14 +143,21 @@ export const AddEditModal: React.FC<AddEditModalProps> = ({
   };
 
   const handleRatingChange = (key: keyof typeof formData.rating, value: number) => {
-    const newRating = { ...formData.rating, [key]: value };
-    newRating.overall = calculateOverall(newRating);
-    setFormData(prev => ({ ...prev, rating: newRating as any }));
+    setFormData(prev => {
+      const newRating = { ...(prev.rating || {}), [key]: value };
+      return {
+        ...prev,
+        rating: {
+          ...newRating,
+          overall: calculateOverall(newRating)
+        } as any
+      };
+    });
   };
 
   const handleSave = () => {
     if (!formData.title) {
-      onToast('error', 'Title is required');
+      onToast('error', 'Title is mandatory');
       return;
     }
     onSave({
@@ -106,341 +170,382 @@ export const AddEditModal: React.FC<AddEditModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-6">
-      <motion.div 
+    <div className="fixed inset-0 z-[500] flex items-center justify-center p-4 sm:p-8">
+      <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         onClick={onClose}
-        className="absolute inset-0 bg-background/80 backdrop-blur-md" 
+        className="absolute inset-0 bg-background/90 backdrop-blur-xl"
       />
-      
-      <motion.div 
-        initial={{ y: '100%' }}
-        animate={{ y: 0 }}
-        exit={{ y: '100%' }}
-        className="relative w-full max-w-2xl bg-card border-t sm:border border-white/10 rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+
+      <motion.div
+        initial={{ scale: 0.9, opacity: 0, y: 20 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        exit={{ scale: 0.9, opacity: 0, y: 20 }}
+        className="relative w-full max-w-4xl glass-panel rounded-[40px] shadow-[0_0_100px_rgba(0,0,0,0.5)] overflow-hidden flex flex-col md:flex-row h-full max-h-[850px] border border-white/10"
       >
-        {/* Header */}
-        <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between bg-white/5">
-          <div className="flex items-center gap-4">
-            <button 
-              onClick={() => setActiveTab('details')}
-              className={cn(
-                "text-sm font-bold uppercase tracking-widest transition-all",
-                activeTab === 'details' ? "text-accent" : "text-text-secondary hover:text-text-primary"
-              )}
-            >
-              Details
-            </button>
-            <button 
-              onClick={() => setActiveTab('take')}
-              className={cn(
-                "text-sm font-bold uppercase tracking-widest transition-all",
-                activeTab === 'take' ? "text-accent" : "text-text-secondary hover:text-text-primary"
-              )}
-            >
-              My Take
-            </button>
+        {/* Sidebar Tabs (Desktop) */}
+        <div className="w-full md:w-64 bg-white/[0.02] border-b md:border-b-0 md:border-r border-white/5 flex flex-col">
+          <div className="p-8 border-b border-white/5 flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-accent flex items-center justify-center shadow-accent-glow">
+              <Sparkles size={20} className="text-background" />
+            </div>
+            <div>
+              <h2 className="font-bebas text-2xl tracking-wider text-white">
+                {editingEntry ? 'Edit Title' : 'New Entry'}
+              </h2>
+              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-text-muted">Master Registry</p>
+            </div>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-white/5 rounded-full transition-colors">
-            <X size={20} />
-          </button>
+
+          <div className="p-4 flex flex-row md:flex-col gap-2">
+            {[
+              { id: 'details', label: 'Core Metadata', icon: Info },
+              { id: 'take', label: 'The Experience', icon: Star }
+            ].map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id as any)}
+                className={cn(
+                  "flex-1 md:flex-none flex items-center gap-4 px-6 py-4 rounded-2xl text-[11px] font-black uppercase tracking-[0.2em] transition-all group",
+                  activeTab === tab.id
+                    ? "bg-accent text-background shadow-accent-glow"
+                    : "text-text-secondary hover:text-white hover:bg-white/5"
+                )}
+              >
+                <tab.icon size={16} />
+                <span className="hidden md:inline">{tab.label}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="mt-auto p-6 hidden md:block">
+            {formData.poster && (
+              <div className="aspect-[2/3] rounded-3xl overflow-hidden border border-white/10 shadow-2xl relative group">
+                <img src={formData.poster} alt="" className="w-full h-full object-cover" />
+                <div className="absolute inset-0 bg-gradient-to-t from-background via-transparent to-transparent opacity-60" />
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar bg-gradient-to-b from-card to-background">
-          {activeTab === 'details' ? (
-            <div className="space-y-6">
-              {/* Title & Search */}
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold uppercase tracking-widest text-accent/60">Title</label>
-                <div className="flex gap-2">
-                  <div className="relative flex-1">
-                    <input 
-                      type="text"
-                      value={formData.title || ''}
-                      onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-                      className="input-field w-full bg-white/5 border-white/10 focus:border-accent/50 placeholder:text-white/20"
-                      placeholder="Enter movie or series title..."
-                    />
-                    <AnimatePresence>
-                      {tmdbResults.length > 0 && (
-                        <motion.div 
-                          initial={{ opacity: 0, y: -10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: -10 }}
-                          className="absolute top-full left-0 right-0 mt-2 glass-panel rounded-2xl overflow-hidden z-[110] shadow-2xl border border-white/10"
-                        >
-                          {tmdbResults.map(res => (
-                            <button
-                              key={res.id}
-                              onClick={() => selectTmdbResult(res)}
-                              className="w-full px-4 py-3 text-left hover:bg-accent/10 flex items-center gap-4 border-b border-white/5 last:border-0 transition-colors group"
+        {/* Main Form Area */}
+        <div className="flex-1 flex flex-col min-w-0">
+          <div className="flex-1 overflow-y-auto p-8 sm:p-12 space-y-10 custom-scrollbar">
+            <AnimatePresence mode="wait">
+              {activeTab === 'details' ? (
+                <motion.div
+                  key="details"
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -20 }}
+                  className="space-y-10"
+                >
+                  {/* Title Section */}
+                  <div className="space-y-4">
+                    <div className="flex gap-3 items-end">
+                      <div className="relative flex-1 group">
+                        <Input
+                          label="Title & Recognition"
+                          value={formData.title || ''}
+                          onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                          className="font-bold"
+                          placeholder="What have you watched?"
+                        />
+                        <AnimatePresence>
+                          {tmdbResults.length > 0 && (
+                            <motion.div
+                              initial={{ opacity: 0, y: 10 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              exit={{ opacity: 0, y: 10 }}
+                              className="absolute top-full left-0 right-0 mt-4 glass-panel rounded-3xl overflow-hidden z-[110] shadow-[0_20px_50px_rgba(0,0,0,0.5)] border border-white/10"
                             >
-                              <div className="w-10 h-14 shrink-0 rounded overflow-hidden bg-white/5 border border-white/10">
-                                {res.poster_path ? (
-                                  <img src={`https://image.tmdb.org/t/p/w92${res.poster_path}`} className="w-full h-full object-cover" />
-                                ) : (
-                                  <div className="w-full h-full flex items-center justify-center text-[8px] font-bebas opacity-30">NO POSTER</div>
-                                )}
-                              </div>
-                              <div>
-                                <div className="text-sm font-bold group-hover:text-accent transition-colors">{res.title || res.name}</div>
-                                <div className="text-[10px] text-text-secondary uppercase tracking-wider">
-                                  {res.media_type} • {new Date(res.release_date || res.first_air_date).getFullYear() || 'N/A'}
-                                </div>
-                              </div>
-                            </button>
-                          ))}
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-                  <button 
-                    onClick={handleTmdbSearch}
-                    disabled={isSearching}
-                    className="btn-secondary flex items-center gap-2 px-4 shrink-0 border-accent/20 hover:border-accent/50"
-                  >
-                    {isSearching ? <Loader2 size={18} className="animate-spin text-accent" /> : <Search size={18} className="text-accent" />}
-                    <span className="hidden sm:inline">Fetch Metadata</span>
-                  </button>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                {/* Type */}
-                <div className="space-y-2">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-accent/60">Type</label>
-                  <div className="flex bg-white/5 p-1 rounded-xl border border-white/5">
-                    <button 
-                      onClick={() => setFormData({ ...formData, type: 'movie' })}
-                      className={cn(
-                        "flex-1 py-2 rounded-lg text-[10px] font-bold tracking-widest transition-all flex items-center justify-center gap-2", 
-                        formData.type === 'movie' ? "bg-accent text-background shadow-lg" : "text-text-secondary hover:text-text-primary"
-                      )}
-                    >
-                      <Film size={14} /> MOVIE
-                    </button>
-                    <button 
-                      onClick={() => setFormData({ ...formData, type: 'series' })}
-                      className={cn(
-                        "flex-1 py-2 rounded-lg text-[10px] font-bold tracking-widest transition-all flex items-center justify-center gap-2", 
-                        formData.type === 'series' ? "bg-accent text-background shadow-lg" : "text-text-secondary hover:text-text-primary"
-                      )}
-                    >
-                      <Tv size={14} /> SERIES
-                    </button>
-                  </div>
-                </div>
-
-                {/* Status */}
-                <div className="space-y-2">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-accent/60">Status</label>
-                  <select 
-                    value={formData.status}
-                    onChange={(e) => setFormData({ ...formData, status: e.target.value as WatchStatus })}
-                    className="input-field w-full text-xs bg-white/5 border-white/10 appearance-none cursor-pointer"
-                  >
-                    <option value="want_to_watch">Watchlist</option>
-                    <option value="watching">Watching</option>
-                    <option value="watched">Watched</option>
-                    <option value="dropped">Dropped</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold uppercase tracking-wider text-text-secondary">Year</label>
-                  <input 
-                    type="number"
-                    value={formData.year || ''}
-                    onChange={(e) => setFormData({ ...formData, year: parseInt(e.target.value) })}
-                    className="input-field w-full"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold uppercase tracking-wider text-text-secondary">Runtime (min)</label>
-                  <input 
-                    type="number"
-                    value={formData.runtime || ''}
-                    onChange={(e) => setFormData({ ...formData, runtime: parseInt(e.target.value) })}
-                    className="input-field w-full"
-                  />
-                </div>
-              </div>
-
-              {formData.type === 'series' && (
-                <div className="grid grid-cols-3 gap-4 p-4 bg-white/5 rounded-2xl">
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-bold uppercase text-text-secondary">Seasons</label>
-                    <input type="number" value={formData.seasons || 0} onChange={(e) => setFormData({ ...formData, seasons: parseInt(e.target.value) })} className="input-field w-full text-center" />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-bold uppercase text-text-secondary">Current S</label>
-                    <input type="number" value={formData.currentSeason || 1} onChange={(e) => setFormData({ ...formData, currentSeason: parseInt(e.target.value) })} className="input-field w-full text-center" />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-bold uppercase text-text-secondary">Current E</label>
-                    <input type="number" value={formData.currentEpisode || 1} onChange={(e) => setFormData({ ...formData, currentEpisode: parseInt(e.target.value) })} className="input-field w-full text-center" />
-                  </div>
-                </div>
-              )}
-
-              <div className="space-y-2">
-                <label className="text-xs font-bold uppercase tracking-wider text-text-secondary">Genres (comma separated)</label>
-                <input 
-                  type="text"
-                  value={formData.genres?.join(', ') || ''}
-                  onChange={(e) => setFormData({ ...formData, genres: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
-                  className="input-field w-full"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-xs font-bold uppercase tracking-wider text-text-secondary">Poster URL</label>
-                <div className="flex gap-4">
-                  {formData.poster && <img src={formData.poster} className="w-16 h-24 rounded-lg object-cover border border-white/10" />}
-                  <input 
-                    type="text"
-                    value={formData.poster || ''}
-                    onChange={(e) => setFormData({ ...formData, poster: e.target.value })}
-                    className="input-field flex-1"
-                    placeholder="https://..."
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-xs font-bold uppercase tracking-wider text-text-secondary">Description</label>
-                <textarea 
-                  value={formData.description || ''}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  className="input-field w-full h-24 resize-none"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold uppercase tracking-wider text-text-secondary">IMDb ID</label>
-                  <input type="text" value={formData.imdbId || ''} onChange={(e) => setFormData({ ...formData, imdbId: e.target.value })} className="input-field w-full" placeholder="tt1234567" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold uppercase tracking-wider text-text-secondary">Streaming URL</label>
-                  <input type="text" value={formData.streamingUrl || ''} onChange={(e) => setFormData({ ...formData, streamingUrl: e.target.value })} className="input-field w-full" placeholder="stremio:///..." />
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-8">
-              {/* Ratings */}
-              <div className="space-y-6">
-                <h4 className="text-sm font-bold uppercase tracking-widest text-accent">Ratings</h4>
-                {[
-                  { key: 'story', label: 'Story' },
-                  { key: 'acting', label: 'Acting' },
-                  { key: 'visuals', label: 'Visuals' }
-                ].map(item => (
-                  <div key={item.key} className="space-y-2">
-                    <div className="flex justify-between text-xs font-medium">
-                      <span>{item.label}</span>
-                      <span className="text-accent">{formData.rating?.[item.key as keyof typeof formData.rating] || 0}/10</span>
+                              {tmdbResults.map(res => (
+                                <button
+                                  key={res.id}
+                                  onClick={() => selectTmdbResult(res)}
+                                  className="w-full px-6 py-4 text-left hover:bg-accent/10 flex items-center gap-5 border-b border-white/5 last:border-0 transition-all group"
+                                >
+                                  <div className="w-12 h-16 shrink-0 rounded-xl overflow-hidden bg-white/5 border border-white/10 shadow-lg">
+                                    {res.poster_path ? (
+                                      <img src={`https://image.tmdb.org/t/p/w92${res.poster_path}`} className="w-full h-full object-cover" />
+                                    ) : (
+                                      <div className="w-full h-full flex items-center justify-center text-[8px] font-bebas opacity-30">NO POSTER</div>
+                                    )}
+                                  </div>
+                                  <div>
+                                    <div className="text-base font-bold text-white group-hover:text-accent transition-colors">{res.title || res.name}</div>
+                                    <div className="text-[10px] text-text-muted font-black uppercase tracking-[0.2em]">
+                                      {res.media_type} <span className="text-accent/30 mx-2">•</span> {new Date(res.release_date || res.first_air_date).getFullYear() || 'N/A'}
+                                    </div>
+                                  </div>
+                                </button>
+                              ))}
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
+                      <Button
+                        onClick={handleTmdbSearch}
+                        disabled={isSearching}
+                        variant="secondary"
+                        size="icon"
+                        className="w-16 h-[68px] rounded-2xl bg-surface-active border border-border-default hover:bg-accent hover:text-background hover:scale-105 active:scale-95 group shadow-xl mb-1"
+                        title="Fetch Master Metadata"
+                        aria-label="Fetch Master Metadata"
+                      >
+                        {isSearching ? <Loader2 size={24} className="animate-spin text-accent" /> : <Search size={24} className="group-hover:text-background" />}
+                      </Button>
                     </div>
-                    <input 
-                      type="range"
-                      min="0"
-                      max="10"
-                      step="0.1"
-                      value={formData.rating?.[item.key as keyof typeof formData.rating] || 0}
-                      onChange={(e) => handleRatingChange(item.key as any, parseFloat(e.target.value))}
-                      className="w-full accent-accent bg-white/10 rounded-lg h-2 appearance-none cursor-pointer"
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-8">
+                    {/* Media Type */}
+                    <div className="space-y-4">
+                      <label className="text-[11px] font-black uppercase tracking-[0.3em] text-text-muted">Classification</label>
+                      <div className="flex bg-white/5 p-1.5 rounded-[20px] border border-white/5 shadow-inner">
+                        <button
+                          onClick={() => setFormData({ ...formData, type: 'movie' })}
+                          className={cn(
+                            "flex-1 py-3 rounded-2xl text-[11px] font-black uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-3",
+                            formData.type === 'movie' ? "bg-accent text-background shadow-accent-glow" : "text-text-secondary hover:text-white"
+                          )}
+                        >
+                          <Film size={16} /> Movie
+                        </button>
+                        <button
+                          onClick={() => setFormData({ ...formData, type: 'series' })}
+                          className={cn(
+                            "flex-1 py-3 rounded-2xl text-[11px] font-black uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-3",
+                            formData.type === 'series' ? "bg-accent text-background shadow-accent-glow" : "text-text-secondary hover:text-white"
+                          )}
+                        >
+                          <Tv size={16} /> Series
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Status */}
+                    <div className="space-y-4">
+                      <label className="text-[11px] font-black uppercase tracking-[0.3em] text-text-muted">Viewing Status</label>
+                      <div className="relative">
+                        <select
+                          value={formData.status}
+                          onChange={(e) => setFormData({ ...formData, status: e.target.value as WatchStatus })}
+                          className="input-field w-full pr-12 text-sm font-bold bg-white/5 border-white/10 appearance-none cursor-pointer"
+                        >
+                          <option value="want_to_watch">Plan to Watch</option>
+                          <option value="watching">Currently Watching</option>
+                          <option value="watched">Completed</option>
+                          <option value="dropped">Dropped</option>
+                        </select>
+                        <div className="absolute right-6 top-1/2 -translate-y-1/2 pointer-events-none opacity-30">
+                          <Plus size={16} />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Year & Runtime */}
+                  <div className="grid grid-cols-2 gap-8">
+                    <div className="space-y-4">
+                      <Input
+                        label={<><Calendar size={14} className="text-accent" /> Release Year</>}
+                        type="number"
+                        value={formData.year || ''}
+                        onChange={(e) => setFormData({ ...formData, year: parseInt(e.target.value) })}
+                        className="font-bold text-center"
+                        placeholder="2026"
+                      />
+                    </div>
+                    <div className="space-y-4">
+                      <Input
+                        label={<><Clock size={14} className="text-accent" /> Duration (m)</>}
+                        type="number"
+                        value={formData.runtime || ''}
+                        onChange={(e) => setFormData({ ...formData, runtime: parseInt(e.target.value) })}
+                        className="font-bold text-center"
+                        placeholder="120"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Series Specifics */}
+                  {formData.type === 'series' && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="grid grid-cols-3 gap-6 p-8 bg-white/[0.03] rounded-[32px] border border-white/5 shadow-xl"
+                    >
+                      <div className="space-y-3">
+                        <label className="text-[10px] font-black uppercase tracking-widest text-text-muted text-center block">Total Seasons</label>
+                        <input type="number" value={formData.seasons || 0} onChange={(e) => setFormData({ ...formData, seasons: parseInt(e.target.value) })} className="input-field w-full text-center font-bold bg-background/50 border-white/5" />
+                      </div>
+                      <div className="space-y-3">
+                        <label className="text-[10px] font-black uppercase tracking-widest text-text-muted text-center block">Current S</label>
+                        <input type="number" value={formData.currentSeason || 1} onChange={(e) => setFormData({ ...formData, currentSeason: parseInt(e.target.value) })} className="input-field w-full text-center font-bold bg-accent/10 border-accent/20 text-accent" />
+                      </div>
+                      <div className="space-y-3">
+                        <label className="text-[10px] font-black uppercase tracking-widest text-text-muted text-center block">Current E</label>
+                        <input type="number" value={formData.currentEpisode || 1} onChange={(e) => setFormData({ ...formData, currentEpisode: parseInt(e.target.value) })} className="input-field w-full text-center font-bold bg-accent/10 border-accent/20 text-accent" />
+                      </div>
+                    </motion.div>
+                  )}
+
+                  {/* Description */}
+                  <div className="space-y-4">
+                    <label className="text-[11px] font-black uppercase tracking-[0.3em] text-text-muted">Master Synopsis</label>
+                    <textarea
+                      value={formData.description || ''}
+                      onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                      className="input-field w-full h-32 resize-none text-sm leading-relaxed"
+                      placeholder="Share the plot details..."
                     />
                   </div>
-                ))}
-                
-                <div className="bg-accent/10 border border-accent/20 p-6 rounded-2xl text-center">
-                  <div className="text-[10px] font-bold uppercase tracking-widest text-accent mb-1">Overall Score</div>
-                  <div className="text-4xl font-bebas text-accent">
-                    {formData.rating?.overall ? formData.rating.overall.toFixed(1) : '—'}
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="take"
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -20 }}
+                  className="space-y-12"
+                >
+                  {/* Rating Scales */}
+                  <div className="space-y-8 glass-panel p-10 rounded-[40px] border border-white/5 relative overflow-hidden">
+                    <div className="absolute top-0 right-0 w-64 h-64 bg-accent/5 blur-[80px] rounded-full -mr-32 -mt-32" />
+
+                    <h4 className="text-[11px] font-black uppercase tracking-[0.4em] text-accent flex items-center gap-4">
+                      <div className="w-10 h-[1px] bg-accent/30" /> Subjective Critique
+                    </h4>
+
+                    <div className="space-y-8">
+                      {[
+                        { key: 'story', label: 'Story & Narrative', icon: Film },
+                        { key: 'acting', label: 'Performance & Cast', icon: Sparkles },
+                        { key: 'visuals', label: 'Cinematography', icon: Plus }
+                      ].map(item => (
+                        <div key={item.key} className="space-y-4">
+                          <div className="flex justify-between items-center pr-2">
+                            <div className="flex items-center gap-3">
+                              <item.icon size={16} className="text-accent/60" />
+                              <span className="text-xs font-black uppercase tracking-widest text-text-primary">{item.label}</span>
+                            </div>
+                            <span className="text-xl font-bebas text-accent tracking-widest">{formData.rating?.[item.key as keyof typeof formData.rating] || 0}<span className="text-[10px] text-accent/40 ml-1">/10</span></span>
+                          </div>
+                          <div className="relative group/slider">
+                            <input
+                              type="range"
+                              min="0"
+                              max="10"
+                              step="0.5"
+                              value={formData.rating?.[item.key as keyof typeof formData.rating] || 0}
+                              onChange={(e) => handleRatingChange(item.key as any, parseFloat(e.target.value))}
+                              className="w-full h-2 bg-white/5 rounded-full appearance-none cursor-pointer accent-accent"
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="mt-10 pt-10 border-t border-white/5 flex items-center justify-between">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-text-muted mb-1">Calculated Average</p>
+                        <h3 className="font-bebas text-6xl text-accent leading-none">
+                          {formData.rating?.overall ? formData.rating.overall.toFixed(1) : '0.0'}
+                        </h3>
+                      </div>
+                      <div className="w-24 h-24 rounded-full border-4 border-accent/20 flex items-center justify-center relative overflow-hidden">
+                        <div className="absolute inset-0 bg-accent/10 blur-[20px]" />
+                        <Star size={40} className="text-accent fill-accent shadow-accent-glow" />
+                      </div>
+                    </div>
                   </div>
+
+                  {/* Rewatch Logic */}
+                  <div className="flex items-center justify-between p-8 bg-white/[0.03] rounded-[32px] border border-white/5 group hover:border-accent/20 transition-all">
+                    <div className="flex flex-col">
+                      <h4 className="text-[11px] font-black uppercase tracking-[0.3em] text-text-muted mb-1">Rewatch Frequency</h4>
+                      <p className="text-xs font-medium text-text-secondary">How many times have you revisited this?</p>
+                    </div>
+                    <div className="flex items-center gap-6 bg-background/50 p-2 rounded-2xl border border-white/5">
+                      <button
+                        onClick={() => setFormData({ ...formData, rewatchCount: Math.max(0, (formData.rewatchCount || 0) - 1) })}
+                        className="w-10 h-10 rounded-xl bg-white/5 hover:bg-white/10 flex items-center justify-center transition-all active:scale-90"
+                      >
+                        <Minus size={18} />
+                      </button>
+                      <span className="font-bebas text-4xl text-white w-12 text-center">{formData.rewatchCount || 0}</span>
+                      <button
+                        onClick={() => setFormData({ ...formData, rewatchCount: (formData.rewatchCount || 0) + 1 })}
+                        className="w-10 h-10 rounded-xl bg-accent text-background flex items-center justify-center transition-all hover:scale-105 active:scale-90 shadow-accent-glow"
+                      >
+                        <Plus size={18} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Tags & Personal Note */}
+                  <div className="grid grid-cols-1 gap-8">
+                    <div className="space-y-4">
+                      <label className="text-[11px] font-black uppercase tracking-[0.3em] text-text-muted flex items-center gap-2">
+                        <Tag size={14} className="text-accent" /> Meta Tags
+                      </label>
+                      <input
+                        type="text"
+                        value={formData.tags?.join(', ') || ''}
+                        onChange={(e) => setFormData({ ...formData, tags: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
+                        className="input-field w-full py-4 bg-white/5 border-white/10"
+                        placeholder="Masterpiece, Rewatchable, Sci-Fi..."
+                      />
+                    </div>
+
+                    <div className="space-y-4">
+                      <label className="text-[11px] font-black uppercase tracking-[0.3em] text-text-muted">Personal Reflections</label>
+                      <textarea
+                        value={formData.personalNote || ''}
+                        onChange={(e) => setFormData({ ...formData, personalNote: e.target.value })}
+                        className="input-field w-full h-40 resize-none text-sm p-6 leading-relaxed"
+                        placeholder="Capture your thoughts on this experience..."
+                      />
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {/* Footer Actions */}
+          <div className="px-12 py-8 bg-white/[0.02] border-t border-white/5 flex items-center justify-between gap-6">
+            <div className="hidden sm:flex items-center gap-3">
+              {isScoring && (
+                <div className="flex items-center gap-3 text-accent text-[10px] font-black uppercase tracking-widest animate-pulse">
+                  <div className="w-2 h-2 rounded-full bg-accent animate-ping" />
+                  Synchronizing Collective Wisdom...
                 </div>
-              </div>
-
-              {/* Rewatch */}
-              <div className="flex items-center justify-between p-4 bg-white/5 rounded-2xl">
-                <div className="flex items-center gap-3">
-                  <RotateCcw size={20} className="text-accent" />
-                  <span className="text-sm font-bold">Rewatched</span>
-                </div>
-                <div className="flex items-center gap-4">
-                  <button 
-                    onClick={() => setFormData({ ...formData, rewatchCount: Math.max(0, (formData.rewatchCount || 0) - 1) })}
-                    className="p-2 bg-white/5 rounded-lg hover:bg-white/10"
-                  >
-                    <Minus size={16} />
-                  </button>
-                  <span className="font-bebas text-2xl w-8 text-center">{formData.rewatchCount || 0}</span>
-                  <button 
-                    onClick={() => setFormData({ ...formData, rewatchCount: (formData.rewatchCount || 0) + 1 })}
-                    className="p-2 bg-white/5 rounded-lg hover:bg-white/10"
-                  >
-                    <Plus size={16} />
-                  </button>
-                </div>
-              </div>
-
-              {/* Personal Note */}
-              <div className="space-y-2">
-                <label className="text-xs font-bold uppercase tracking-wider text-text-secondary">Personal Note</label>
-                <textarea 
-                  value={formData.personalNote || ''}
-                  onChange={(e) => setFormData({ ...formData, personalNote: e.target.value })}
-                  className="input-field w-full h-32 resize-none"
-                  placeholder="Your thoughts, quotes you loved, why you'd rewatch..."
-                />
-              </div>
-
-              {/* Tags */}
-              <div className="space-y-2">
-                <label className="text-xs font-bold uppercase tracking-wider text-text-secondary">Tags (comma separated)</label>
-                <input 
-                  type="text"
-                  value={formData.tags?.join(', ') || ''}
-                  onChange={(e) => setFormData({ ...formData, tags: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
-                  className="input-field w-full"
-                />
-              </div>
-
-              {/* Date Watched */}
-              {formData.status === 'watched' && (
-                <div className="space-y-2">
-                  <label className="text-xs font-bold uppercase tracking-wider text-text-secondary">Date Watched</label>
-                  <input 
-                    type="date"
-                    value={formData.dateWatched?.split('T')[0] || ''}
-                    onChange={(e) => setFormData({ ...formData, dateWatched: e.target.value ? new Date(e.target.value).toISOString() : null })}
-                    className="input-field w-full"
-                  />
+              )}
+              {!isScoring && formData.imdbId && (
+                <div className="flex items-center gap-2 text-text-muted text-[10px] font-black uppercase tracking-widest">
+                  <Hash size={12} className="text-accent" />
+                  ID INDEXED
                 </div>
               )}
             </div>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="px-6 py-4 border-t border-white/5 bg-white/5 flex items-center justify-end gap-3">
-          <button onClick={onClose} className="btn-secondary">Cancel</button>
-          <button onClick={handleSave} className="btn-primary">Save Entry</button>
+            <div className="flex items-center gap-4 w-full sm:w-auto">
+              <Button onClick={onClose} variant="secondary" className="px-8 py-3.5 flex-1 sm:flex-none">Cancel</Button>
+              <Button
+                onClick={handleSave}
+                variant="primary"
+                className="px-10 py-3.5 flex-1 sm:flex-none"
+              >
+                <Save size={18} />
+                {editingEntry ? 'Update Registry' : 'Save Mastermind'}
+              </Button>
+            </div>
+          </div>
         </div>
       </motion.div>
     </div>
   );
 };
-
-const RotateCcw = ({ size, className }: { size: number, className?: string }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-    <path d="M3 3v5h5" />
-  </svg>
-);
