@@ -2,6 +2,51 @@ import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { LibraryEntry, Settings } from './types';
 
+export function calculateUltimateScore(entry: Partial<LibraryEntry>): number | null {
+  // 1. Resolve source scores with scale check
+  let imdb = entry.imdb_score ?? entry.imdb_10;
+  // If IMDb is on 10-scale (e.g. 8.1), scale it to 100
+  if (imdb != null && imdb > 0 && imdb < 11) imdb *= 10;
+
+  const mc = entry.mc_score ?? entry.m_val;
+  const rc = entry.rt_critics ?? entry.rc_val;
+  const ra = entry.rt_audience ?? entry.ra_val;
+
+  // Require ALL four sources to be present and valid
+  if (!imdb || isNaN(imdb) || imdb <= 0) return null;
+  if (!mc || isNaN(mc) || mc <= 0) return null;
+  if (!rc || isNaN(rc) || rc <= 0) return null;
+  if (!ra || isNaN(ra) || ra <= 0) return null;
+
+  let scoreSum = 0;
+  let weightSum = 0;
+
+  // IMDB: 40%
+  if (imdb != null && !isNaN(imdb) && imdb > 0) {
+    scoreSum += imdb * 0.40;
+    weightSum += 0.40;
+  }
+  // Metacritic: 40%
+  if (mc != null && !isNaN(mc) && mc > 0) {
+    scoreSum += mc * 0.40;
+    weightSum += 0.40;
+  }
+  // Rotten Tomatoes: 20% (Avg of critics and audience)
+  // If one is missing, use the other at full 20% weight.
+  // If both are missing, weight sum doesn't increase.
+  const rtParts = [rc, ra].filter(v => v != null && !isNaN(v as number) && v > 0) as number[];
+  if (rtParts.length > 0) {
+    const rtAvg = rtParts.reduce((a, b) => a + b, 0) / rtParts.length;
+    scoreSum += rtAvg * 0.20;
+    weightSum += 0.20;
+  }
+
+  if (weightSum === 0) return null;
+
+  // Normalizing by weightSum ensures a consistent 0-100 scale regardless of missing sources
+  return Math.round(scoreSum / weightSum);
+}
+
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
@@ -10,7 +55,7 @@ export function formatRuntime(minutes: number) {
   if (!minutes) return 'N/A';
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  return h > 0 ? `${h}h ${m} m` : `${m} m`;
 }
 
 export function normalizeTitle(title: string) {
@@ -49,7 +94,8 @@ export function computeSmartScore(entry: LibraryEntry, library: LibraryEntry[]) 
   const genreAverages = getGenreAverages(library);
 
   // 1. Ultimate Score Bonus (Primary)
-  const ratingValue = entry.ultimate_score ? (entry.ultimate_score / 10) : 0;
+  const ultimateScore = calculateUltimateScore(entry);
+  const ratingValue = ultimateScore !== null ? (ultimateScore / 10) : 0;
   if (ratingValue > 0) {
     score += (ratingValue * 5); // Max 50 points from rating
   }

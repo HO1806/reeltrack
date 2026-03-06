@@ -37,11 +37,15 @@ export interface LibraryEntry {
   isFavorite: boolean;
   isPinned: boolean;
   notifiedUnrated: boolean;
-  imdb_10?: number;
-  m_val?: number;
-  rc_val?: number;
-  ra_val?: number;
-  ultimate_score?: number;
+  imdb_score?: number;
+  mc_score?: number;
+  rt_critics?: number;
+  rt_audience?: number;
+  imdb_10?: number; // Deprecated
+  m_val?: number;   // Deprecated
+  rc_val?: number;  // Deprecated
+  ra_val?: number;  // Deprecated
+  ultimate_score?: number; // Calculated client-side now
 }
 
 export interface Settings {
@@ -52,11 +56,13 @@ export interface Settings {
   bestStreak: number;
   currentStreak: number;
   lastWatchedDate: string | null;
+  theme?: string;
 }
 
 export type NotificationType =
   | 'UNRATED_WATCHED'
   | 'MISSING_METADATA'
+  | 'MISSING_SCORE'
   | 'MISSING_IMDB_ID'
   | 'DUPLICATE_DETECTED'
   | 'IMPORT_COMPLETE'

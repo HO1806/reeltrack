@@ -291,7 +291,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
                       onClick={() => { setGenre('all'); setActiveMenu(null); }}
                       className={cn("px-4 py-2 rounded-xl text-left text-[10px] font-black uppercase tracking-wider transition-colors", genre === 'all' ? "bg-accent text-background" : "hover:bg-white/5 text-text-secondary")}
                     >All Genres</button>
-                    {genres.sort().map(g => (
+                    {genres.map(g => (
                       <button
                         key={g}
                         onClick={() => { setGenre(g); setActiveMenu(null); }}
@@ -326,7 +326,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
                       { id: 'title', label: 'Title A-Z' },
                       { id: 'year', label: 'Year ↓' },
                       { id: 'recentlyWatched', label: 'Recents' }
-                    ].map(s => (
+                    ].filter(s => !(activeTab === 'history' && s.id === 'smartScore')).map(s => (
                       <button
                         key={s.id}
                         onClick={() => { setSortBy(s.id); setActiveMenu(null); }}

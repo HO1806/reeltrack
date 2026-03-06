@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Star, Play, Edit2, Trash2, Heart, RotateCcw, Plus, Minus, Tv, Film, Clock, Search, Loader2, Sparkles } from 'lucide-react';
-import { cn } from '../utils';
+import { cn, calculateUltimateScore } from '../utils';
 import { LibraryEntry } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { Button } from './ui/Button';
@@ -34,6 +34,7 @@ export const MovieCard: React.FC<MovieCardProps> = ({
   const isWatched = entry.status === 'watched';
   const isSeries = entry.type === 'series';
   const needsRating = isWatched && entry.rating.overall === null;
+  const ultimateScore = calculateUltimateScore(entry);
 
   const handleQuickRate = (e: React.MouseEvent, rating: number) => {
     e.stopPropagation();
@@ -83,10 +84,10 @@ export const MovieCard: React.FC<MovieCardProps> = ({
         </Button>
 
         {/* Rating Badge (Top Right) - Ultimate Score */}
-        {((entry.ultimate_score || 0) > 0) && (
+        {ultimateScore !== null && (
           <div className="absolute top-4 right-4 z-[50] score-badge animate-glow">
             <Star size={14} className="fill-background" />
-            {Math.round(entry.ultimate_score!)}
+            {ultimateScore}
           </div>
         )}
 
@@ -97,11 +98,6 @@ export const MovieCard: React.FC<MovieCardProps> = ({
           </div>
         )}
 
-        {/* Type Badge */}
-        <div className="absolute bottom-4 left-4 z-[50] pill-badge bg-black/50 backdrop-blur-md border-white/10 text-white/80 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-500">
-          {isSeries ? <Tv size={10} /> : <Film size={10} />}
-          {isSeries ? 'Series' : 'Movie'}
-        </div>
 
         {/* Rewatch Badge */}
         {entry.rewatchCount > 0 && (

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Key, Monitor, Database, Trash2, Eye, EyeOff, Download, Upload, ExternalLink, SortAsc } from 'lucide-react';
+import { X, Key, Monitor, Database, Trash2, Eye, EyeOff, Download, Upload, ExternalLink, SortAsc, Sparkles } from 'lucide-react';
 import { Settings } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../utils';
@@ -12,10 +12,11 @@ interface SettingsDrawerProps {
   onExport: () => void;
   onImportBackup: () => void;
   onClearData: () => Promise<void>;
+  onRepairRatings: () => Promise<void>;
 }
 
 export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
-  isOpen, onClose, settings, onUpdateSettings, onExport, onImportBackup, onClearData
+  isOpen, onClose, settings, onUpdateSettings, onExport, onImportBackup, onClearData, onRepairRatings
 }) => {
   const [showTmdb, setShowTmdb] = useState(false);
   const [showGroq, setShowGroq] = useState(false);
@@ -159,6 +160,15 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
               <div className="text-left">
                 <p className="text-sm font-bold">Import Backup</p>
                 <p className="text-[10px] text-text-muted uppercase tracking-wider">Restore from JSON file</p>
+              </div>
+            </button>
+            <button onClick={onRepairRatings} className="glass-panel p-5 rounded-2xl flex items-center gap-4 hover:border-white/[0.15] transition-all duration-300 group">
+              <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center text-accent group-hover:scale-105 transition-transform">
+                <Sparkles size={18} />
+              </div>
+              <div className="text-left">
+                <p className="text-sm font-bold">Repair Ratings</p>
+                <p className="text-[10px] text-text-muted uppercase tracking-wider">Force refresh all library scores</p>
               </div>
             </button>
           </div>

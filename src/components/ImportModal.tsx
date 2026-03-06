@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { X, Upload, FileJson, Loader2, CheckCircle } from 'lucide-react';
+import { X, Upload, FileJson, Loader2, CheckCircle, ExternalLink, RefreshCw } from 'lucide-react';
 import { StremioImport, LibraryEntry } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { generateId, normalizeTitle } from '../utils';
@@ -31,13 +31,10 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     let skipped = 0;
 
     for (const item of newItems) {
-      // Deduplicate
       const exists = existingLibrary.find(e => {
         const hasImdbMatch = item.imdb_id && e.imdbId === item.imdb_id;
         const hasTitleMatch = normalizeTitle(e.title) === normalizeTitle(item.title);
-        // If year is available in both, check it too for title matches
         const hasYearMatch = (!e.year || !item.year) || (e.year === item.year);
-
         return hasImdbMatch || (hasTitleMatch && hasYearMatch);
       });
 
@@ -47,7 +44,6 @@ export const ImportModal: React.FC<ImportModalProps> = ({
         continue;
       }
 
-      // Create skeleton
       const skeleton: LibraryEntry = {
         id: generateId(),
         title: item.title,
@@ -78,7 +74,6 @@ export const ImportModal: React.FC<ImportModalProps> = ({
         notifiedUnrated: false
       };
 
-      // Push skeleton immediately — App.tsx will handle background enrichment
       importedEntries.push(skeleton);
       setProgress(prev => ({ ...prev, current: prev.current + 1 }));
     }
@@ -105,6 +100,11 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     reader.readAsText(file);
   };
 
+  const handleOpenStremioWeb = () => {
+    window.open('https://web.stremio.com/#/library', '_blank');
+    onToast('info', 'Click the purple "⚡ Sync to ReelTrack" button on Stremio Web');
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -120,7 +120,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
       <motion.div
         initial={{ scale: 0.9, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
-        className="relative w-full max-w-md bg-card border border-white/10 rounded-3xl shadow-2xl overflow-hidden p-8"
+        className="relative w-full max-w-lg bg-card border border-white/10 rounded-3xl shadow-2xl overflow-hidden p-8"
       >
         <button onClick={onClose} className="absolute top-4 right-4 p-2 hover:bg-white/5 rounded-full">
           <X size={20} />
@@ -130,9 +130,9 @@ export const ImportModal: React.FC<ImportModalProps> = ({
           <div className="w-16 h-16 bg-accent/10 text-accent rounded-2xl flex items-center justify-center mx-auto mb-6">
             <FileJson size={32} />
           </div>
-          <h2 className="text-2xl font-bebas tracking-wide">Import from Stremio</h2>
+          <h2 className="text-2xl font-bebas tracking-wide">Import Library</h2>
           <p className="text-sm text-text-secondary">
-            Upload the JSON file exported from the Stremio Web companion script.
+            Sync from Stremio Web or upload a JSON export file.
           </p>
 
           {isImporting ? (
@@ -152,13 +152,41 @@ export const ImportModal: React.FC<ImportModalProps> = ({
               </div>
             </div>
           ) : (
-            <div className="py-8">
+            <div className="py-6 space-y-4">
+              {/* Stremio Web Sync Button */}
+              <button
+                onClick={handleOpenStremioWeb}
+                className="w-full border-2 border-[#7B5BF5]/30 hover:border-[#7B5BF5]/60 hover:bg-[#7B5BF5]/10 p-6 rounded-2xl transition-all group flex items-center gap-4"
+              >
+                <div className="w-12 h-12 bg-[#7B5BF5]/20 rounded-xl flex items-center justify-center flex-shrink-0 group-hover:bg-[#7B5BF5]/30 transition-colors">
+                  <RefreshCw size={24} className="text-[#7B5BF5]" />
+                </div>
+                <div className="text-left flex-1">
+                  <span className="text-sm font-bold text-text-primary block">Sync from Stremio Web</span>
+                  <span className="text-xs text-text-secondary">Opens Stremio — click the ⚡ button there</span>
+                </div>
+                <ExternalLink size={16} className="text-text-secondary group-hover:text-[#7B5BF5] transition-colors" />
+              </button>
+
+              {/* Divider */}
+              <div className="flex items-center gap-3">
+                <div className="flex-1 h-px bg-white/10" />
+                <span className="text-xs text-text-secondary uppercase tracking-widest">or</span>
+                <div className="flex-1 h-px bg-white/10" />
+              </div>
+
+              {/* File Upload */}
               <button
                 onClick={() => fileInputRef.current?.click()}
-                className="w-full border-2 border-dashed border-white/10 hover:border-accent/50 hover:bg-accent/5 p-10 rounded-2xl transition-all group"
+                className="w-full border-2 border-dashed border-white/10 hover:border-accent/50 hover:bg-accent/5 p-6 rounded-2xl transition-all group flex items-center gap-4"
               >
-                <Upload size={32} className="mx-auto mb-4 text-text-secondary group-hover:text-accent transition-colors" />
-                <span className="text-sm font-bold text-text-secondary group-hover:text-text-primary">Click to upload JSON</span>
+                <div className="w-12 h-12 bg-white/5 rounded-xl flex items-center justify-center flex-shrink-0 group-hover:bg-accent/10 transition-colors">
+                  <Upload size={24} className="text-text-secondary group-hover:text-accent transition-colors" />
+                </div>
+                <div className="text-left">
+                  <span className="text-sm font-bold text-text-secondary group-hover:text-text-primary block">Upload JSON File</span>
+                  <span className="text-xs text-text-secondary">From the Stremio export script</span>
+                </div>
               </button>
               <input
                 type="file"
@@ -171,7 +199,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
           )}
 
           <div className="text-[10px] text-text-secondary uppercase tracking-widest leading-relaxed">
-            Metadata fetching respects TMDB rate limits (1 req / 300ms).<br />
+            New entries will be auto-enriched with metadata & ratings.<br />
             Existing entries will not be overwritten.
           </div>
         </div>

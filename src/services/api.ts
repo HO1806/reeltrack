@@ -53,11 +53,10 @@ export const api = {
                 } else {
                     return {
                         ...localEntry,
-                        ultimate_score: localEntry.ultimate_score ?? remoteEntry.ultimate_score,
-                        imdb_10: localEntry.imdb_10 ?? remoteEntry.imdb_10,
-                        m_val: localEntry.m_val ?? remoteEntry.m_val,
-                        rc_val: localEntry.rc_val ?? remoteEntry.rc_val,
-                        ra_val: localEntry.ra_val ?? remoteEntry.ra_val,
+                        imdb_score: localEntry.imdb_score ?? remoteEntry.imdb_score ?? localEntry.imdb_10 ?? remoteEntry.imdb_10,
+                        mc_score: localEntry.mc_score ?? remoteEntry.mc_score ?? localEntry.m_val ?? remoteEntry.m_val,
+                        rt_critics: localEntry.rt_critics ?? remoteEntry.rt_critics ?? localEntry.rc_val ?? remoteEntry.rc_val,
+                        rt_audience: localEntry.rt_audience ?? remoteEntry.rt_audience ?? localEntry.ra_val ?? remoteEntry.ra_val,
                     };
                 }
             });
@@ -97,8 +96,12 @@ export const api = {
         return await response.json();
     },
 
-    async runBatchRater(): Promise<any> {
-        const response = await fetch(`${API_BASE_URL}/rate/batch`, { method: 'POST' });
+    async runBatchRater(force = false): Promise<any> {
+        const response = await fetch(`${API_BASE_URL}/rate/batch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ force })
+        });
         if (!response.ok) throw new Error('Failed to run batch rater');
         return response.json();
     },
@@ -112,7 +115,7 @@ export const api = {
             });
             if (!response.ok) return null;
             const result = await response.json();
-            if (result.success && result.ultimate_score != null) {
+            if (result.success) {
                 return {
                     ultimate_score: result.ultimate_score,
                     imdb_10: result.imdb_10,
@@ -151,5 +154,62 @@ export const api = {
             body: JSON.stringify(settings),
         });
         if (!response.ok) throw new Error('Failed to save settings');
+    },
+
+    async stremioWebSync(items: { imdbId: string; title: string; type: string; isWatched: boolean; year?: number }[]): Promise<{ success: boolean; added: number; skipped: number; watchedUpdated: number }> {
+        try {
+            const response = await fetch(`${API_BASE_URL}/library/stremio-web-sync`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ items })
+            });
+            if (!response.ok) throw new Error('Failed to sync Stremio Web data');
+            return await response.json();
+        } catch (e) {
+            console.error('Stremio Web Sync error:', e);
+            throw e;
+        }
+    },
+
+    async getLimitStatus(): Promise<{ limitReached: boolean }> {
+        try {
+            const response = await fetch(`${API_BASE_URL}/limits/status`);
+            if (!response.ok) return { limitReached: false };
+            return await response.json();
+        } catch (e) {
+            return { limitReached: false };
+        }
+    },
+
+    async getSyncStatus(): Promise<{ total: number; synced: number; missingScoreCount: number; isApiLimited: boolean }> {
+        try {
+            const response = await fetch(`${API_BASE_URL}/sync-status`);
+            if (!response.ok) return { total: 0, synced: 0, missingScoreCount: 0, isApiLimited: false };
+            return await response.json();
+        } catch (e) {
+            return { total: 0, synced: 0, missingScoreCount: 0, isApiLimited: false };
+        }
+    },
+
+    async getStats(): Promise<any> {
+        const response = await fetch(`${API_BASE_URL}/stats`);
+        if (!response.ok) throw new Error('Failed to fetch stats');
+        return response.json();
+    },
+
+    async getMissingRatings(): Promise<any[]> {
+        const response = await fetch(`${API_BASE_URL}/missing-ratings`);
+        if (!response.ok) throw new Error('Failed to fetch missing ratings');
+        return await response.json();
+    },
+
+    async saveRatings(items: any[]): Promise<{ success: boolean; updatedCount: number }> {
+        const response = await fetch(`${API_BASE_URL}/save-ratings`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items }),
+        });
+        if (!response.ok) throw new Error('Failed to save ratings');
+        return await response.json();
     }
 };

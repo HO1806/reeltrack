@@ -3,7 +3,7 @@ import { LibraryEntry, MediaType } from '../types';
 import { getRecommendations, getExtendedCredits } from '../services/tmdb';
 import { ArrowLeft, Play, Plus, Star, Calendar, Clock, User, Film, Sparkles } from 'lucide-react';
 import { motion } from 'motion/react';
-import { cn } from '../utils';
+import { cn, calculateUltimateScore } from '../utils';
 import { DetailsSkeleton } from './Skeleton';
 
 interface SimilarItem {
@@ -41,6 +41,7 @@ export const MovieDetails: React.FC<MovieDetailsProps> = ({ entry, onBack, tmdbA
   const [cast, setCast] = useState<CastMember[]>([]);
   const [director, setDirector] = useState<Director | null>(null);
   const [loading, setLoading] = useState(false);
+  const ultimateScore = calculateUltimateScore(entry);
 
   useEffect(() => {
     if (entry.tmdbId && tmdbApiKey) {
@@ -119,10 +120,10 @@ export const MovieDetails: React.FC<MovieDetailsProps> = ({ entry, onBack, tmdbA
                 </div>
               )}
 
-              {((entry.ultimate_score || 0) > 0) && (
+              {(ultimateScore && ultimateScore > 0) && (
                 <div className="absolute top-6 right-6 score-badge text-2xl animate-glow">
                   <Star size={20} className="fill-background" />
-                  {Math.round(entry.ultimate_score!)}
+                  {ultimateScore}
                 </div>
               )}
             </motion.div>
@@ -215,6 +216,61 @@ export const MovieDetails: React.FC<MovieDetailsProps> = ({ entry, onBack, tmdbA
                 {entry.description || "The story of this masterpiece remains a mystery."}
               </p>
             </div>
+
+            {/* Rating Breakdown Section */}
+            {ultimateScore && (
+              <div className="glass-panel p-8 sm:p-12 rounded-[40px] space-y-8 relative overflow-hidden border-accent/10">
+                <div className="absolute top-0 right-0 w-64 h-64 bg-accent/5 blur-[100px] rounded-full -mr-32 -mt-32" />
+                <h3 className="text-xs font-black uppercase tracking-[0.3em] text-accent flex items-center gap-4">
+                  <div className="w-10 h-[1px] bg-accent/30" /> Rating Signal Breakdown
+                </h3>
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+                  {[
+                    { label: 'IMDb', value: entry.imdb_score ?? entry.imdb_10, icon: Star, color: 'text-[#F5C518]' },
+                    { label: 'Metascore', value: entry.mc_score ?? entry.m_val, icon: Film, color: 'text-[#66cc33]' },
+                    { label: 'RT Critics', value: entry.rt_critics ?? entry.rc_val, icon: Sparkles, color: 'text-[#fa320a]' },
+                    { label: 'RT Audience', value: entry.rt_audience ?? entry.ra_val, icon: User, color: 'text-[#fa320a]' },
+                  ].map((stat, i) => {
+                    let displayValue = stat.value;
+                    // Auto-normalize 10-scale values for display
+                    if (displayValue != null && displayValue > 0 && displayValue < 11) {
+                      displayValue *= 10;
+                    }
+
+                    return (
+                      <div key={i} className="flex flex-col gap-2 p-4 rounded-2xl bg-white/[0.02] border border-white/5">
+                        <div className="flex items-center gap-2">
+                          <stat.icon size={14} className={stat.color} />
+                          <span className="text-[10px] font-black uppercase tracking-widest text-text-muted">{stat.label}</span>
+                        </div>
+                        <div className="text-2xl font-bebas tracking-tighter text-white">
+                          {displayValue != null && displayValue > 0 ? Math.round(displayValue) : 'N/A'}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="pt-4 border-t border-white/5">
+                  <p className="text-[10px] text-text-muted font-bold tracking-widest uppercase mb-4">Ultimate Synthesis Algorithm</p>
+                  <div className="flex items-end gap-6">
+                    <div className="text-7xl font-bebas text-accent leading-none">
+                      {ultimateScore}
+                    </div>
+                    <div className="pb-1">
+                      <div className="text-[10px] font-black text-accent uppercase tracking-[0.3em]">Mastermind Score</div>
+                      <div className="w-32 h-1 bg-white/5 rounded-full mt-2 overflow-hidden">
+                        <div
+                          className="h-full bg-accent shadow-accent-glow transition-all duration-1000"
+                          style={{ width: `${ultimateScore}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Cast Grid */}
             <div className="space-y-10">

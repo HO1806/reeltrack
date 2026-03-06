@@ -1,24 +1,53 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { Routes, Route, useNavigate, useParams, useLocation } from 'react-router-dom';
 import { LibraryEntry, Settings, Suggestion, WatchStatus, Notification, MediaType } from './types';
 import { Navbar } from './components/Navbar';
 import { FilterBar } from './components/FilterBar';
 import { LibraryGrid } from './components/LibraryGrid';
+import { RatedPage } from './components/RatedPage';
 import { AddEditModal } from './components/AddEditModal';
 import { ImportModal } from './components/ImportModal';
 import { SettingsDrawer } from './components/SettingsDrawer';
 import { StatsDashboard } from './components/StatsDashboard';
-import { Suggestions } from './components/Suggestions';
-import { BulkAddModal } from './components/BulkAddModal';
 import { MovieDetails } from './components/MovieDetails';
+import { MissingRatingsModal } from './components/MissingRatingsModal';
 import { ToastContainer, ToastMessage } from './components/Toast';
-import { generateId, normalizeTitle, computeSmartScore, updateStreak, isDuplicate } from './utils';
+import { generateId, normalizeTitle, computeSmartScore, updateStreak, isDuplicate, calculateUltimateScore } from './utils';
 import { getTMDBMetadata, searchTMDB, fetchAndEnrichTMDB } from './services/tmdb';
 import { api } from './services/api';
 import { motion, AnimatePresence } from 'motion/react';
 import { Play, X, Search, Popcorn, Film, Plus, Star, Tv, RotateCcw, Sparkles, Dices } from 'lucide-react';
 import { cn } from './utils';
 
+const MovieDetailsRoute = ({ library, settings, onAddSimilar, onClick }: any) => {
+  const { id } = useParams();
+  const navigate = useNavigate();
+
+  const entry = library.find((e: any) => e.imdbId === id || e.id === id);
+
+  if (!entry) return <div className="p-10 text-center text-text-muted">Item not found in your matrix.</div>;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="flex-1"
+    >
+      <MovieDetails
+        entry={entry}
+        onBack={() => navigate(-1)}
+        tmdbApiKey={settings.tmdbApiKey}
+        onAdd={onAddSimilar}
+        library={library}
+      />
+    </motion.div>
+  );
+};
+
 export default function App() {
+  const navigate = useNavigate();
+  const location = useLocation();
   // --- State ---
   // Library loads exclusively from SQL database — no localStorage
   const [library, setLibrary] = useState<LibraryEntry[]>([]);
@@ -40,59 +69,132 @@ export default function App() {
     return saved ? JSON.parse(saved) : [];
   });
 
-  const [activeTab, setActiveTab] = useState('movies');
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [genreFilter, setGenreFilter] = useState('all');
   const [starFilter, setStarFilter] = useState<number | 'all'>('all');
   const [starDirection, setStarDirection] = useState<'above' | 'below'>('above');
-  const [sortBy, setSortBy] = useState(settings.defaultSort || 'smartScore');
+
+  const [sortBy, setSortBy] = useState(() => {
+    if (location.pathname === '/history') return 'recentlyWatched';
+    return settings.defaultSort || 'smartScore';
+  });
+
+  // Automatically adjust default sort when navigating between History and other tabs
+  useEffect(() => {
+    if (location.pathname === '/history' && sortBy !== 'recentlyWatched') {
+      setSortBy('recentlyWatched');
+    } else if (location.pathname !== '/history' && sortBy === 'recentlyWatched') {
+      setSortBy(settings.defaultSort || 'smartScore');
+    }
+  }, [location.pathname]);
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isMissingRatingsModalOpen, setIsMissingRatingsModalOpen] = useState(false);
   const [editingEntry, setEditingEntry] = useState<LibraryEntry | null>(null);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [isSavedFlash, setIsSavedFlash] = useState(false);
-  const [pickedEntry, setPickedEntry] = useState<LibraryEntry | null>(null);
-  const [isSurpriseChoiceOpen, setIsSurpriseChoiceOpen] = useState(false);
   const [similarSource, setSimilarSource] = useState<LibraryEntry | null>(null);
   const [selectedEntry, setSelectedEntry] = useState<LibraryEntry | null>(null);
   const [searchSuggestions, setSearchSuggestions] = useState<any[]>([]);
   const [isSearchingAutocomplete, setIsSearchingAutocomplete] = useState(false);
   const [isInitialSync, setIsInitialSync] = useState(true);
-  const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
   // Flag to prevent infinite sync loop when library is updated from DB data
   const syncFromDB = useRef(false);
+  const [isApiLimited, setIsApiLimited] = useState(false);
+
+  // Backend-driven sync progress (updated via lightweight polling)
+  const [backendSyncTotal, setBackendSyncTotal] = useState(0);
+  const [backendSyncSynced, setBackendSyncSynced] = useState(0);
+  const [backendMissingScore, setBackendMissingScore] = useState(0);
+
+  // Custom event trigger
+  const [forceResync, setForceResync] = useState<() => void>(() => () => { });
   // Tracks items that failed TMDB extraction to prevent infinite looping
   const failedEnrichmentIds = useRef<Set<string>>(new Set());
+  // Nonce used to advance background enrichment without triggering library-ref changes
+  const [enrichmentNonce, setEnrichmentNonce] = useState(0);
 
-  // --- MySQL Load & Sync (DB is single source of truth for library AND settings) ---
+  // --- Derived State ---
+  const totalItemsCount = library.length;
+  const totalMoviesCount = useMemo(() => library.filter(e => e.type === 'movie' && e.status !== 'watched').length, [library]);
+  const totalSeriesCount = useMemo(() => library.filter(e => (e.type === 'series' || e.type === 'tv') && e.status !== 'watched').length, [library]);
+  const totalHistoryCount = useMemo(() => library.filter(e => e.status === 'watched').length, [library]);
+  const totalHomeCount = useMemo(() => library.filter(e => e.status !== 'watched').length, [library]);
+
+
+  // --- Initial Data Load ---
   useEffect(() => {
-    const loadFromDB = async () => {
+    const initData = async () => {
       try {
-        const [dbLibrary, dbSettings] = await Promise.all([
+        const [libData, settingsData, limitStatus] = await Promise.all([
           api.getLibrary(),
-          api.getSettings()
+          api.getSettings(),
+          api.getLimitStatus()
         ]);
-        setLibrary(dbLibrary);
-        if (dbSettings && Object.keys(dbSettings).length > 0) {
-          setSettings(prev => ({ ...prev, ...dbSettings } as Settings));
-          if (dbSettings.defaultSort) {
-            setSortBy(dbSettings.defaultSort);
-          }
+
+        syncFromDB.current = true;
+        setLibrary(libData);
+        if (Object.keys(settingsData).length > 0) {
+          setSettings(settingsData as Settings);
         }
-        setIsSettingsLoaded(true);
-      } catch (err) {
-        console.warn('Failed to load data from DB:', err);
-        setIsSettingsLoaded(true);
-      } finally {
+        setIsApiLimited(limitStatus.limitReached);
         setIsInitialSync(false);
+        setIsSettingsLoaded(true);
+
+        const savedNotifs = localStorage.getItem('reeltrack_notifications');
+        if (savedNotifs) {
+          try { setNotifications(JSON.parse(savedNotifs)); } catch (e) { }
+        }
+      } catch (err) {
+        console.error('Failed to load initial data:', err);
       }
     };
-    loadFromDB();
+    initData();
   }, []);
+
+  // --- Periodic polling for new metadata ---
+  useEffect(() => {
+    setForceResync(() => async () => {
+      try {
+        const [freshLib, limitStatus] = await Promise.all([
+          api.getLibrary(),
+          api.getLimitStatus()
+        ]);
+        syncFromDB.current = true;
+        setLibrary(freshLib);
+        setIsApiLimited(limitStatus.limitReached);
+      } catch (e) {
+        console.error('Failed to poll background sync updates', e);
+      }
+    });
+
+    const interval = setInterval(async () => {
+      try {
+        const [freshLib, limitStatus] = await Promise.all([
+          api.getLibrary(),
+          api.getLimitStatus()
+        ]);
+        syncFromDB.current = true;
+        setLibrary(freshLib);
+        setIsApiLimited(limitStatus.limitReached);
+      } catch (e) {
+        console.error('Failed to poll background sync updates', e);
+      }
+    }, 15000); // 15 seconds
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // Set theme when settings change
+  useEffect(() => {
+    if (settings.theme) {
+      document.documentElement.className = `theme-${settings.theme}`;
+    }
+  }, [settings.theme]);
 
   // --- Autocomplete ---
   useEffect(() => {
@@ -130,23 +232,21 @@ export default function App() {
       return () => clearTimeout(timer);
     }
 
-    // Push all changes to DB
+    // Push all changes to DB (Incremental/Sync fallback)
     const timeout = setTimeout(async () => {
       try {
-        console.log('Pushing library changes to DB (Items:', library.length, ')');
+        console.log('Pushing library changes to DB (Incremental Sync Target:', library.length, ')');
         const updatedFromDB = await api.syncLibrary(library);
 
-        // If the DB consolidated items (due to unique constraints), update local library
-        if (updatedFromDB && updatedFromDB.length !== library.length) {
-          console.log('DB consolidated items. Updating local state from', library.length, 'to', updatedFromDB.length);
+        if (updatedFromDB) {
+          console.log('Sync complete. Updating local state with latest DB data.');
           syncFromDB.current = true;
           setLibrary(updatedFromDB);
         }
-        console.log('Successfully synced library to DB!');
       } catch (e) {
         console.error('CRITICAL: Library push intercept failed:', e);
       }
-    }, 1500);
+    }, 5000); // Reduced debounce for fallback sync
 
     setIsSavedFlash(true);
     const timer = setTimeout(() => setIsSavedFlash(false), 1500);
@@ -175,103 +275,95 @@ export default function App() {
     localStorage.setItem('reeltrack_notifications', JSON.stringify(notifications));
   }, [notifications]);
 
-  // --- Background Enrichment Queue ---
-  useEffect(() => {
-    if (!settings.tmdbApiKey || library.length === 0) return;
-
-    // Find the first item that needs enrichment (missing poster OR missing ultimate_score)
-    const needsEnrichment = library.find(e =>
-      !failedEnrichmentIds.current.has(e.id) &&
-      (e.poster === '' || e.ultimate_score === undefined || e.ultimate_score === null)
-    );
-
-    if (!needsEnrichment) return;
-
-    const timer = setTimeout(async () => {
-      try {
-        let updatedEntry = null;
-
-        // Has IMDb ID -> Use backend fetcher (which also executes Python Rater logic)
-        if (needsEnrichment.imdbId) {
-          const enriched = await api.fetchFromImdb(needsEnrichment.imdbId, settings.tmdbApiKey);
-          if (enriched.success && enriched.entry) {
-            updatedEntry = enriched.entry;
-          }
-        }
-        // Missing IMDb ID -> Fallback directly to title search over frontend TMDB
-        else {
-          const typeForTMDB = needsEnrichment.type === 'movie' ? 'movie' : 'tv';
-          const fallbackData = await fetchAndEnrichTMDB(needsEnrichment.title, typeForTMDB, settings.tmdbApiKey);
-          if (fallbackData) {
-            updatedEntry = fallbackData;
-          }
-        }
-
-        if (updatedEntry) {
-          setLibrary(prev => prev.map(e => {
-            if (e.id === needsEnrichment.id) {
-              // Preserve status and other user-managed state from the original entry
-              const {
-                status,
-                dateAdded,
-                dateWatched,
-                isFavorite,
-                isPinned,
-                notifiedUnrated,
-                personalNote,
-                rating,
-                ...metadata
-              } = updatedEntry;
-              return { ...e, ...metadata };
-            }
-            return e;
-          }));
-        } else {
-          failedEnrichmentIds.current.add(needsEnrichment.id);
-          setLibrary(prev => [...prev]); // Trigger re-render to advance queue
-        }
-      } catch (e) {
-        console.error("Enrichment queue error", e);
-        failedEnrichmentIds.current.add(needsEnrichment.id);
-        setLibrary(prev => [...prev]);
-      }
-    }, 2000); // 2 second delay between queries to accommodate python rater & TMDB
-
-    return () => clearTimeout(timer);
-  }, [library, settings.tmdbApiKey]);
-
   // --- Streak & Notifications Logic ---
   useEffect(() => {
+    if (isInitialSync || library.length === 0) return;
+
+    // 1. Update Streak
     const updatedSettings = updateStreak(settings, library);
     if (updatedSettings.currentStreak !== settings.currentStreak) {
       setSettings(updatedSettings);
     }
 
-    // Generate notifications
-    const newNotifications: Notification[] = [...notifications];
-    let changed = false;
+    // 2. Generate Notifications
+    setNotifications(prev => {
+      const newNotifs: Notification[] = [...prev];
+      let notifsChanged = false;
+      let libChanged = false;
+      const updatedLib = [...library];
 
-    // Unrated watched
-    library.forEach(entry => {
-      if (entry.status === 'watched' && entry.rating.overall === null && !entry.notifiedUnrated) {
-        newNotifications.push({
-          id: generateId(),
-          type: 'UNRATED_WATCHED',
-          message: `★ Rate '${entry.title}' — you watched it but haven't rated it yet`,
-          entryId: entry.id,
-          read: false,
-          createdAt: new Date().toISOString()
-        });
-        entry.notifiedUnrated = true;
-        changed = true;
+      library.forEach((entry, idx) => {
+        // A. Unrated watched
+        if (entry.status === 'watched' && entry.rating.overall === null && !entry.notifiedUnrated) {
+          newNotifs.push({
+            id: generateId(),
+            type: 'UNRATED_WATCHED',
+            message: `★ Rate '${entry.title}' — you watched it but haven't rated it yet`,
+            entryId: entry.id,
+            read: false,
+            createdAt: new Date().toISOString()
+          });
+          updatedLib[idx] = { ...entry, notifiedUnrated: true };
+          libChanged = true;
+          notifsChanged = true;
+        }
+
+        // B. Missing Metadata (Poster or Description)
+        const hasMetadataNotif = prev.some(n => n.entryId === entry.id && n.type === 'MISSING_METADATA');
+        if ((entry.poster === '' || !entry.description) && !hasMetadataNotif) {
+          // Skip notifying for items that were just added and might still be in the enrichment queue
+          // (Wait at least 10 seconds after adding? Or just check if failedEnrichmentIds has it)
+          const isFailed = failedEnrichmentIds.current.has(entry.id);
+          if (isFailed || new Date().getTime() - new Date(entry.dateAdded).getTime() > 30000) {
+            newNotifs.push({
+              id: generateId(),
+              type: 'MISSING_METADATA',
+              message: `⚠ '${entry.title}' is missing essential metadata`,
+              entryId: entry.id,
+              read: false,
+              createdAt: new Date().toISOString()
+            });
+            notifsChanged = true;
+          }
+        }
+
+        // C. Missing Ultimate Score
+        const hasScoreNotif = prev.some(n => n.entryId === entry.id && n.type === 'MISSING_SCORE');
+        if ((entry.ultimate_score === undefined || entry.ultimate_score === null) && !hasScoreNotif) {
+          const isFailed = failedEnrichmentIds.current.has(entry.id);
+          if (isFailed || new Date().getTime() - new Date(entry.dateAdded).getTime() > 30000) {
+            newNotifs.push({
+              id: generateId(),
+              type: 'MISSING_SCORE',
+              message: `⚡ '${entry.title}' is missing its Ultimate Score calculation`,
+              entryId: entry.id,
+              read: false,
+              createdAt: new Date().toISOString()
+            });
+            notifsChanged = true;
+          }
+        }
+      });
+
+      if (libChanged) {
+        // Update library state separately to persist notifiedUnrated flags
+        setTimeout(() => {
+          setLibrary(prevLib => {
+            const next = [...prevLib];
+            updatedLib.forEach((e, i) => {
+              if (e.notifiedUnrated) {
+                const index = next.findIndex(item => item.id === e.id);
+                if (index !== -1) next[index] = { ...next[index], notifiedUnrated: true };
+              }
+            });
+            return next;
+          });
+        }, 0);
       }
-    });
 
-    if (changed) {
-      setNotifications(newNotifications);
-      setLibrary([...library]);
-    }
-  }, []);
+      return notifsChanged ? newNotifs : prev;
+    });
+  }, [library.length, isInitialSync]);
 
   // --- Toasts ---
   const addToast = (type: 'success' | 'error' | 'info', message: string) => {
@@ -298,10 +390,15 @@ export default function App() {
   };
 
   // --- Library Actions ---
-  const handleSaveEntry = (entry: LibraryEntry) => {
+  const handleSaveEntry = async (entry: LibraryEntry) => {
     if (editingEntry) {
       setLibrary(prev => prev.map(e => e.id === entry.id ? entry : e));
-      addToast('success', 'Entry updated ✓');
+      try {
+        await api.updateEntry(entry.id, entry);
+        addToast('success', 'Entry updated ✓');
+      } catch (err: any) {
+        addToast('error', `Failed to update: ${err.message}`);
+      }
       // Re-rate if imdbId changed or score missing
       if (entry.imdbId && !entry.ultimate_score) autoRateEntry(entry);
     } else {
@@ -318,13 +415,22 @@ export default function App() {
         return;
       }
       setLibrary(prev => [entry, ...prev]);
-      addToast('success', 'Entry added ✓');
-      // Auto-rate new entries in background
-      autoRateEntry(entry);
+      try {
+        await api.addEntry(entry);
+        addToast('success', 'Entry added ✓');
+        autoRateEntry(entry);
+      } catch (err: any) {
+        addToast('error', `Failed to add: ${err.message}`);
+      }
     }
     setIsAddModalOpen(false);
     setEditingEntry(null);
+    // Trigger immediate refresh to show progress live
+    const updated = await api.getLibrary();
+    syncFromDB.current = true;
+    setLibrary(updated);
   };
+
 
   const handleDeleteEntry = async (id: string) => {
     if (confirm('Are you sure you want to delete this entry?')) {
@@ -341,23 +447,34 @@ export default function App() {
     }
   };
 
-  const handleToggleFavorite = (id: string) => {
-    setLibrary(prev => prev.map(e => e.id === id ? { ...e, isFavorite: !e.isFavorite } : e));
+  const handleToggleFavorite = async (id: string) => {
+    const entry = library.find(e => e.id === id);
+    if (!entry) return;
+    const updated = { ...entry, isFavorite: !entry.isFavorite };
+    setLibrary(prev => prev.map(e => e.id === id ? updated : e));
+    try {
+      await api.updateEntry(id, updated);
+    } catch (err) {
+      console.error('Failed to toggle favorite:', err);
+    }
   };
 
-  const handleToggleWatched = (id: string) => {
-    setLibrary(prev => prev.map(e => {
-      if (e.id === id) {
-        const isCurrentlyWatched = e.status === 'watched';
-        return {
-          ...e,
-          status: isCurrentlyWatched ? 'want_to_watch' : 'watched',
-          dateWatched: isCurrentlyWatched ? null : new Date().toISOString()
-        };
-      }
-      return e;
-    }));
-    addToast('success', 'Status updated ✓');
+  const handleToggleWatched = async (id: string) => {
+    const entry = library.find(e => e.id === id);
+    if (!entry) return;
+    const isCurrentlyWatched = entry.status === 'watched';
+    const updated = {
+      ...entry,
+      status: isCurrentlyWatched ? 'want_to_watch' : 'watched' as WatchStatus,
+      dateWatched: isCurrentlyWatched ? null : new Date().toISOString()
+    };
+    setLibrary(prev => prev.map(e => e.id === id ? updated : e));
+    try {
+      await api.updateEntry(id, updated);
+      addToast('success', 'Status updated ✓');
+    } catch (err) {
+      console.error('Failed to toggle watched:', err);
+    }
   };
 
   const handleQuickRate = (id: string, rating: number) => {
@@ -378,11 +495,64 @@ export default function App() {
             newEp = 10;
           }
         }
-        return { ...e, currentEpisode: newEp, currentSeason: newSeason };
+        const updated = { ...e, currentEpisode: newEp, currentSeason: newSeason };
+        // Sync update to backend immediately
+        api.updateEntry(id, updated).catch(err => console.error('[UpdateEpisode] Failed:', err));
+        return updated;
       }
       return e;
     }));
   };
+
+  const handleRepairRatings = async () => {
+    addToast('info', 'Searching for Cine-Frequency errors... Repairing all ratings...');
+    try {
+      const result = await api.runBatchRater(true);
+      console.log('[Repair] Complete:', result);
+      addToast('success', `Analytics Resynced: Processed ${result.processed} assets.`);
+      // Refresh library to see updated scores
+      const updated = await api.getLibrary();
+      syncFromDB.current = true;
+      setLibrary(updated);
+    } catch (err: any) {
+      addToast('error', `System Overload: ${err.message}`);
+    }
+  };
+
+  // --- Lightweight Sync Status Polling ---
+  // Polls /api/sync-status every 5s for real-time progress circle updates
+  // When enrichment completes, triggers one full library refresh
+  const prevSyncedRef = useRef(0);
+  useEffect(() => {
+    if (isInitialSync) return;
+
+    const pollSyncStatus = async () => {
+      try {
+        const status = await api.getSyncStatus();
+        setBackendSyncTotal(status.total);
+        setBackendSyncSynced(status.synced);
+        setBackendMissingScore(status.missingScoreCount);
+        setIsApiLimited(status.isApiLimited);
+
+        // When new items get enriched, refresh the full library so cards update
+        if (status.synced > prevSyncedRef.current && status.synced > 0) {
+          console.log(`[App] Sync progress: ${status.synced}/${status.total}. Refreshing library...`);
+          const freshLib = await api.getLibrary();
+          syncFromDB.current = true;
+          setLibrary(freshLib);
+        }
+        prevSyncedRef.current = status.synced;
+      } catch (err) {
+        console.warn('[App] Sync status poll failed:', err);
+      }
+    };
+
+    // Poll immediately, then every 5 seconds
+    pollSyncStatus();
+    const interval = setInterval(pollSyncStatus, 5000);
+    return () => clearInterval(interval);
+  }, [isInitialSync]);
+
 
   const handleImport = async (newEntries: LibraryEntry[]) => {
     try {
@@ -393,11 +563,13 @@ export default function App() {
       await api.syncLibrary(updatedLibrary);
 
       // Now set state, safe from wipeouts
+      const refreshedLibrary = await api.getLibrary();
       syncFromDB.current = true;
-      setLibrary(updatedLibrary);
+      setLibrary(refreshedLibrary);
       setIsImportModalOpen(false);
       addToast('success', `Import complete: ${newEntries.length} added`);
     } catch (err) {
+
       console.error('CRITICAL: Bulk Import Failed', err);
       addToast('error', 'Failed to save imported items to database!');
     }
@@ -495,6 +667,7 @@ export default function App() {
     addToast('success', `${suggestion.title} added to library`);
   };
 
+
   const handleAddSimilar = async (item: any) => {
     const skeleton: LibraryEntry = {
       id: generateId(),
@@ -539,15 +712,11 @@ export default function App() {
   };
 
   const handleSurpriseMe = (typeChoice?: MediaType) => {
-    if (!typeChoice) {
-      setIsSurpriseChoiceOpen(true);
-      return;
-    }
+    if (!typeChoice) return;
 
-    const unwatched = library.filter(e => e.status !== 'watched' && e.type === typeChoice);
+    const unwatched = library.filter(e => (e.status === 'want_to_watch' || e.status === 'watching') && e.type === typeChoice);
     if (unwatched.length === 0) {
       addToast('info', `Your ${typeChoice} watchlist is empty!`);
-      setIsSurpriseChoiceOpen(false);
       return;
     }
 
@@ -558,8 +727,8 @@ export default function App() {
     });
 
     const random = weightedList[Math.floor(Math.random() * weightedList.length)];
-    setPickedEntry(random);
-    setIsSurpriseChoiceOpen(false);
+    handleEntryClick(random);
+    addToast('info', `Surprise! Directing you to '${random.title}'`);
   };
 
   // --- Notifications Actions ---
@@ -609,34 +778,49 @@ export default function App() {
   };
 
   // --- Filtering & Sorting ---
-  const genres = useMemo(() => {
+  const homeGenres = useMemo(() => {
+    const list = library.filter(e => e.status !== 'watched');
     const set = new Set<string>();
-    library.forEach(e => {
-      if (Array.isArray(e.genres)) {
-        e.genres.forEach(g => set.add(g));
-      }
-    });
+    list.forEach(e => (Array.isArray(e.genres) ? e.genres.forEach(g => set.add(g)) : null));
     return Array.from(set).sort();
   }, [library]);
 
-  const filteredLibrary = useMemo(() => {
+  const moviesGenres = useMemo(() => {
+    const list = library.filter(e => e.type === 'movie' && e.status !== 'watched');
+    const set = new Set<string>();
+    list.forEach(e => (Array.isArray(e.genres) ? e.genres.forEach(g => set.add(g)) : null));
+    return Array.from(set).sort();
+  }, [library]);
+
+  const seriesGenres = useMemo(() => {
+    const list = library.filter(e => (e.type === 'series' || e.type === 'tv') && e.status !== 'watched');
+    const set = new Set<string>();
+    list.forEach(e => (Array.isArray(e.genres) ? e.genres.forEach(g => set.add(g)) : null));
+    return Array.from(set).sort();
+  }, [library]);
+
+  const historyGenres = useMemo(() => {
+    const list = library.filter(e => e.status === 'watched');
+    const set = new Set<string>();
+    list.forEach(e => (Array.isArray(e.genres) ? e.genres.forEach(g => set.add(g)) : null));
+    return Array.from(set).sort();
+  }, [library]);
+
+  const baseFilteredLibrary = useMemo(() => {
     let list = library.filter(e => {
-      // 1. Unify 'tv' and 'series' so the UI only has to deal with two binary types
       const isMovie = e.type === 'movie';
       const isSeries = e.type === 'series' || e.type === 'tv';
-      const isWatched = e.status === 'watched';
 
-      // 2. Base Search & Genre Filters (Applies globally everywhere)
       if (!e.title.toLowerCase().includes(search.toLowerCase())) return false;
       if (genreFilter !== 'all' && !(Array.isArray(e.genres) && e.genres.includes(genreFilter))) return false;
 
-      // 3. Dropdown Type Filter
-      if (typeFilter === 'movie' && !isMovie) return false;
-      if (typeFilter === 'series' && !isSeries) return false;
+      // Type filter only applies to the History page; other pages have inherent type filters
+      if (location.pathname === '/history') {
+        if (typeFilter === 'movie' && !isMovie) return false;
+        if (typeFilter === 'series' && !isSeries) return false;
+      }
 
-      // 4. Dropdown Star Filter (Ultimate Score Logic)
-      const score = Math.round(e.ultimate_score || 0);
-
+      const score = calculateUltimateScore(e) || 0;
       const passesStar = starFilter === 'all' || (
         starDirection === 'above'
           ? score >= (starFilter as number)
@@ -644,24 +828,9 @@ export default function App() {
       );
       if (!passesStar) return false;
 
-      // 5. Deterministic Tab Routing
-      switch (activeTab) {
-        case 'movies':
-          return isMovie && !isWatched; // Unwatched movies only
-        case 'series':
-          return isSeries && !isWatched; // Unwatched series only
-        case 'history':
-          return isWatched; // Watched anything
-        case 'favorites':
-          return isWatched && (e.rating.overall || 0) >= 4.5; // Watched high ratings
-        case 'suggestions':
-        case 'stats':
-        default:
-          return false; // Handled directly by component wrappers, hide from grid
-      }
+      return true;
     });
 
-    // Smart Sort & Pinned logic
     return list.sort((a, b) => {
       if (a.isPinned && !b.isPinned) return -1;
       if (!a.isPinned && b.isPinned) return 1;
@@ -669,20 +838,28 @@ export default function App() {
       if (sortBy === 'smartScore') return computeSmartScore(b, library) - computeSmartScore(a, library);
       if (sortBy === 'dateAdded') return new Date(b.dateAdded).getTime() - new Date(a.dateAdded).getTime();
       if (sortBy === 'rating') {
-        const ratingA = a.ultimate_score ? (a.ultimate_score / 10) : 0;
-        const ratingB = b.ultimate_score ? (b.ultimate_score / 10) : 0;
-        return ratingB - ratingA;
+        return (calculateUltimateScore(b) || 0) - (calculateUltimateScore(a) || 0);
       }
       if (sortBy === 'title') return a.title.localeCompare(b.title);
       if (sortBy === 'year') return b.year - a.year;
       if (sortBy === 'recentlyWatched') {
+        if (!a.dateWatched && !b.dateWatched) {
+          // Both lack a watch date; fallback to date components or zero to maintain symmetry
+          return new Date(b.dateAdded).getTime() - new Date(a.dateAdded).getTime();
+        }
         if (!a.dateWatched) return 1;
         if (!b.dateWatched) return -1;
         return new Date(b.dateWatched).getTime() - new Date(a.dateWatched).getTime();
       }
       return 0;
     });
-  }, [library, search, typeFilter, statusFilter, genreFilter, sortBy, activeTab, starFilter, starDirection]);
+  }, [library, search, typeFilter, genreFilter, sortBy, starFilter, starDirection, location.pathname]);
+
+  // Derived filter views mapped closely to old activeTab logic
+  const homeLibrary = useMemo(() => baseFilteredLibrary.filter(e => e.status !== 'watched'), [baseFilteredLibrary]);
+  const moviesLibrary = useMemo(() => baseFilteredLibrary.filter(e => e.type === 'movie' && e.status !== 'watched'), [baseFilteredLibrary]);
+  const seriesLibrary = useMemo(() => baseFilteredLibrary.filter(e => (e.type === 'series' || e.type === 'tv') && e.status !== 'watched'), [baseFilteredLibrary]);
+  const historyLibrary = useMemo(() => baseFilteredLibrary.filter(e => e.status === 'watched'), [baseFilteredLibrary]);
 
   // --- Keyboard Shortcuts ---
   useEffect(() => {
@@ -701,28 +878,36 @@ export default function App() {
         setIsAddModalOpen(false);
         setIsImportModalOpen(false);
         setIsSettingsOpen(false);
-        setPickedEntry(null);
-        setIsSurpriseChoiceOpen(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+
+
+
+  const handleEntryClick = (entry: LibraryEntry) => {
+    const type = entry.type === 'movie' ? 'movies' : 'series';
+    const id = entry.imdbId || entry.id;
+    navigate(`/${type}/${id}`);
+  };
+
   return (
     <div className="min-h-screen bg-background text-text-primary selection:bg-accent selection:text-background">
       <Navbar
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
         onAdd={() => { setEditingEntry(null); setIsAddModalOpen(true); }}
         onSurprise={handleSurpriseMe}
         onImport={() => setIsImportModalOpen(true)}
-        onBulkAdd={() => setIsBulkModalOpen(true)}
         onSettings={() => setIsSettingsOpen(true)}
         notifications={notifications}
         onMarkRead={handleMarkRead}
         onMarkAllRead={handleMarkAllRead}
-        isSaved={isSavedFlash}
+        totalItems={backendSyncTotal}
+        syncedItems={backendSyncSynced}
+        missingScoreCount={backendMissingScore}
+        isApiLimited={isApiLimited}
+        onMissingRatingsClick={() => setIsMissingRatingsModalOpen(true)}
       />
 
       <main className="pt-nav min-h-screen flex flex-col">
@@ -743,125 +928,167 @@ export default function App() {
                 library={library}
               />
             </motion.div>
-          ) : activeTab === 'suggestions' ? (
-            <motion.div
-              key="suggestions"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              className="px-4 sm:px-8 pt-2 pb-8 flex-1"
-            >
-              <Suggestions
-                library={library}
-                groqApiKey={settings.groqApiKey}
-                tmdbApiKey={settings.tmdbApiKey}
-                onAdd={handleAddFromSuggestion}
-                onSelect={handleSelectSuggestion}
-                onToast={addToast}
-              />
-            </motion.div>
-          ) : activeTab === 'stats' ? (
-            <motion.div
-              key="stats"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              className="px-4 sm:px-8 pt-2 pb-8 flex-1 overflow-y-auto"
-            >
-              <StatsDashboard library={library} />
-            </motion.div>
           ) : (
-            <motion.div
-              key="library-view"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="flex flex-col flex-1"
-            >
+            <Routes>
+              {/* Stats Route */}
+              <Route path="/stats" element={
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  className="px-4 pt-2 flex-1 overflow-hidden"
+                >
+                  <StatsDashboard library={library} />
+                </motion.div>
+              } />
 
-              <FilterBar
-                search={search} setSearch={setSearch}
-                type={typeFilter} setType={setTypeFilter}
-                status={statusFilter} setStatus={setStatusFilter}
-                genre={genreFilter} setGenre={setGenreFilter}
-                star={starFilter} setStar={setStarFilter}
-                starDirection={starDirection} setStarDirection={setStarDirection}
-                sortBy={sortBy} setSortBy={setSortBy}
-                genres={genres}
-                totalCount={library.length}
-                filteredCount={filteredLibrary.length}
-                activeTab={activeTab}
-                suggestions={searchSuggestions}
-                isSearchingSuggestions={isSearchingAutocomplete}
-                onSelectSuggestion={async (s) => {
-                  const type = s.media_type === 'movie' ? 'movie' : 'series';
-                  const existing = library.find(entry => entry.tmdbId === s.id);
-                  if (existing) {
-                    setSelectedEntry(existing);
-                    setSearch('');
-                    return;
-                  }
-
-                  const skeleton: LibraryEntry = {
-                    id: generateId(),
-                    title: s.title || s.name,
-                    type: type as any,
-                    year: new Date(s.release_date || s.first_air_date).getFullYear(),
-                    genres: [],
-                    poster: s.poster_path ? `https://image.tmdb.org/t/p/w500${s.poster_path}` : '',
-                    description: s.overview || '',
-                    director: '',
-                    cast: [],
-                    runtime: 0,
-                    seasons: 0,
-                    currentSeason: 1,
-                    currentEpisode: 1,
-                    status: 'want_to_watch',
-                    rating: { story: null, acting: null, visuals: null, overall: null },
-                    rewatchCount: 0,
-                    streamingUrl: '',
-                    imdbId: '',
-                    tmdbId: s.id,
-                    tmdbPopularity: s.popularity,
-                    vote_average: s.vote_average,
-                    personalNote: '',
-                    dateAdded: new Date().toISOString(),
-                    dateWatched: null,
-                    tags: [],
-                    isFavorite: false,
-                    isPinned: false,
-                    notifiedUnrated: false
-                  };
-
-                  if (settings.tmdbApiKey) {
-                    try {
-                      addToast('info', 'Finishing setup...');
-                      const metadata = await getTMDBMetadata(s.id, s.media_type === 'movie' ? 'movie' : 'tv', settings.tmdbApiKey);
-                      Object.assign(skeleton, metadata);
-                    } catch (e) { }
-                  }
-                  setSelectedEntry(skeleton);
-                  setSearch('');
-                }}
-              />
-
-              <div className="px-2 sm:px-4 pb-12 max-w-content-max mx-auto w-full">
-                <LibraryGrid
-                  entries={filteredLibrary}
+              {/* Rated Page Route */}
+              <Route path="/rated" element={
+                <RatedPage
+                  library={baseFilteredLibrary}
+                  onRate={handleQuickRate}
                   onEdit={(e) => { setEditingEntry(e); setIsAddModalOpen(true); }}
                   onDelete={handleDeleteEntry}
                   onToggleFavorite={handleToggleFavorite}
                   onToggleWatched={handleToggleWatched}
                   onUpdateEpisode={handleUpdateEpisode}
-                  onQuickRate={handleQuickRate}
                   onFindSimilar={setSimilarSource}
-                  onClick={setSelectedEntry}
-                  activeTab={activeTab}
-                  isSearching={search.length > 0}
-                  isLoading={isInitialSync}
+                  onClick={handleEntryClick}
                 />
-              </div>
-            </motion.div>
+              } />
+
+              {/* Detail Routes */}
+              <Route path="/movies/:id" element={<MovieDetailsRoute library={library} settings={settings} onAddSimilar={handleAddSimilar} />} />
+              <Route path="/series/:id" element={<MovieDetailsRoute library={library} settings={settings} onAddSimilar={handleAddSimilar} />} />
+
+              {/* Home Route - Empty for now */}
+              <Route path="/" element={<div className="flex-1" />} />
+
+              {/* Standard List Routes */}
+              {['/movies', '/series', '/history'].map((path) => (
+                <Route key={path} path={path} element={
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="flex flex-col flex-1"
+                  >
+                    <FilterBar
+                      search={search} setSearch={setSearch}
+                      type={typeFilter} setType={setTypeFilter}
+                      status={statusFilter} setStatus={setStatusFilter}
+                      genre={genreFilter} setGenre={setGenreFilter}
+                      star={starFilter} setStar={setStarFilter}
+                      starDirection={starDirection} setStarDirection={setStarDirection}
+                      sortBy={sortBy} setSortBy={setSortBy}
+                      genres={
+                        path === '/' ? homeGenres :
+                          path === '/movies' ? moviesGenres :
+                            path === '/series' ? seriesGenres :
+                              historyGenres
+                      }
+                      totalCount={
+                        path === '/' ? totalHomeCount :
+                          path === '/movies' ? totalMoviesCount :
+                            path === '/series' ? totalSeriesCount :
+                              totalHistoryCount
+                      }
+                      filteredCount={
+                        path === '/' ? homeLibrary.length :
+                          path === '/movies' ? moviesLibrary.length :
+                            path === '/series' ? seriesLibrary.length :
+                              historyLibrary.length
+                      }
+                      activeTab={
+                        path === '/' ? 'home' :
+                          path === '/movies' ? 'movies' :
+                            path === '/series' ? 'series' :
+                              'history'
+                      }
+                      suggestions={searchSuggestions}
+                      isSearchingSuggestions={isSearchingAutocomplete}
+                      onSelectSuggestion={async (s) => {
+                        const type = s.media_type === 'movie' ? 'movie' : 'series';
+                        const existing = library.find(entry => entry.tmdbId === s.id);
+                        if (existing) {
+                          handleEntryClick(existing);
+                          setSearch('');
+                          return;
+                        }
+
+                        const skeleton: LibraryEntry = {
+                          id: generateId(),
+                          title: s.title || s.name,
+                          type: type as any,
+                          year: s.release_date || s.first_air_date ? new Date(s.release_date || s.first_air_date).getFullYear() : 0,
+                          genres: [],
+                          poster: s.poster_path ? `https://image.tmdb.org/t/p/w500${s.poster_path}` : '',
+                          description: s.overview || '',
+                          director: '',
+                          cast: [],
+                          runtime: 0,
+                          seasons: 0,
+                          currentSeason: 1,
+                          currentEpisode: 1,
+                          status: 'want_to_watch',
+                          rating: { story: null, acting: null, visuals: null, overall: null },
+                          rewatchCount: 0,
+                          streamingUrl: '',
+                          imdbId: '',
+                          tmdbId: s.id,
+                          tmdbPopularity: s.popularity,
+                          vote_average: s.vote_average,
+                          personalNote: '',
+                          dateAdded: new Date().toISOString(),
+                          dateWatched: null,
+                          tags: [],
+                          isFavorite: false,
+                          isPinned: false,
+                          notifiedUnrated: false
+                        };
+
+                        if (settings.tmdbApiKey) {
+                          try {
+                            addToast('info', 'Finishing setup...');
+                            const metadata = await getTMDBMetadata(s.id, s.media_type === 'movie' ? 'movie' : 'tv', settings.tmdbApiKey);
+                            Object.assign(skeleton, metadata);
+                          } catch (e) { }
+                        }
+                        setSelectedEntry(skeleton);
+                        setSearch('');
+                      }}
+                    />
+
+                    <div className="pb-12 max-w-content-max mx-auto w-full">
+                      <LibraryGrid
+                        entries={
+                          path === '/' ? homeLibrary :
+                            path === '/movies' ? moviesLibrary :
+                              path === '/series' ? seriesLibrary :
+                                historyLibrary
+                        }
+                        onEdit={(e) => { setEditingEntry(e); setIsAddModalOpen(true); }}
+                        onDelete={handleDeleteEntry}
+                        onToggleFavorite={handleToggleFavorite}
+                        onToggleWatched={handleToggleWatched}
+                        onUpdateEpisode={handleUpdateEpisode}
+                        onQuickRate={handleQuickRate}
+                        onFindSimilar={setSimilarSource}
+                        onClick={handleEntryClick}
+                        activeTab={
+                          path === '/' ? 'home' :
+                            path === '/movies' ? 'movies' :
+                              path === '/series' ? 'series' :
+                                'history'
+                        }
+                        isSearching={search.length > 0}
+                        isLoading={isInitialSync}
+                      />
+                    </div>
+                  </motion.div>
+                } />
+              ))}
+            </Routes>
           )}
         </AnimatePresence>
       </main>
@@ -890,19 +1117,16 @@ export default function App() {
           />
         )}
 
-        {isBulkModalOpen && (
-          <BulkAddModal
-            isOpen={isBulkModalOpen}
-            onClose={() => setIsBulkModalOpen(false)}
-            onSuccess={async () => {
-              const updated = await api.getLibrary();
-              setLibrary(updated);
-            }}
-            tmdbApiKey={settings.tmdbApiKey}
-            onToast={addToast}
-          />
-        )}
-
+        <MissingRatingsModal
+          isOpen={isMissingRatingsModalOpen}
+          onClose={() => setIsMissingRatingsModalOpen(false)}
+          onSaved={async () => {
+            const freshLib = await api.getLibrary();
+            syncFromDB.current = true;
+            setLibrary(freshLib);
+            addToast('success', 'Manual ratings saved ✨');
+          }}
+        />
         {isSettingsOpen && (
           <div className="fixed inset-0 z-[150] flex justify-end">
             <motion.div
@@ -967,117 +1191,13 @@ export default function App() {
                     addToast('error', `Failed to clear backend: ${e.message}`);
                   }
                 }}
+                onRepairRatings={handleRepairRatings}
               />
             </motion.div>
           </div>
         )}
 
-        {isSurpriseChoiceOpen && (
-          <div className="fixed inset-0 z-[200] flex items-center justify-center p-6">
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setIsSurpriseChoiceOpen(false)}
-              className="absolute inset-0 bg-background/90 backdrop-blur-xl"
-            />
-            <motion.div
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              className="relative w-full max-w-sm glass-panel p-8 rounded-[3rem] text-center space-y-8"
-            >
-              <div className="space-y-2">
-                <h2 className="text-3xl font-bebas tracking-widest">Surprise Me</h2>
-                <p className="text-text-secondary text-xs uppercase tracking-widest">What are you in the mood for?</p>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <button
-                  onClick={() => handleSurpriseMe('movie')}
-                  className="flex flex-col items-center gap-4 p-6 rounded-3xl bg-white/5 hover:bg-accent hover:text-background transition-all group"
-                >
-                  <Film size={32} className="group-hover:scale-110 transition-transform" />
-                  <span className="font-bebas tracking-widest text-lg">Movie</span>
-                </button>
-                <button
-                  onClick={() => handleSurpriseMe('series')}
-                  className="flex flex-col items-center gap-4 p-6 rounded-3xl bg-white/5 hover:bg-accent hover:text-background transition-all group"
-                >
-                  <Tv size={32} className="group-hover:scale-110 transition-transform" />
-                  <span className="font-bebas tracking-widest text-lg">Series</span>
-                </button>
-              </div>
-              <button
-                onClick={() => setIsSurpriseChoiceOpen(false)}
-                className="text-text-secondary hover:text-white text-[10px] font-bold uppercase tracking-widest pt-4"
-              >
-                Cancel
-              </button>
-            </motion.div>
-          </div>
-        )}
 
-        {pickedEntry && (
-          <div className="fixed inset-0 z-[200] flex items-center justify-center p-6">
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setPickedEntry(null)}
-              className="absolute inset-0 bg-background/90 backdrop-blur-xl"
-            />
-            <motion.div
-              initial={{ scale: 0.5, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.5, opacity: 0 }}
-              className="relative w-full max-w-sm bg-card rounded-[3rem] overflow-hidden shadow-[0_0_80px_rgba(245,197,24,0.4)] border border-accent/30"
-            >
-              <div className="aspect-[2/3] relative">
-                {pickedEntry.poster ? (
-                  <img src={pickedEntry.poster} className="w-full h-full object-cover" />
-                ) : (
-                  <div className="w-full h-full bg-accent/10 flex items-center justify-center">
-                    <span className="font-bebas text-6xl text-accent/20">{pickedEntry.title.substring(0, 2)}</span>
-                  </div>
-                )}
-                <div className="absolute inset-0 bg-gradient-to-t from-card via-transparent to-transparent" />
-                <div className="absolute bottom-10 left-8 right-8 text-center space-y-3">
-                  <div className="text-accent font-bold text-[10px] tracking-[0.4em] uppercase">Your Random Pick</div>
-                  <h2 className="font-bebas text-4xl tracking-wider">{pickedEntry.title}</h2>
-                  <div className="text-text-secondary text-[10px] font-bold uppercase tracking-widest">{pickedEntry.year} • {pickedEntry.type}</div>
-                </div>
-              </div>
-              <div className="p-8 grid grid-cols-2 gap-4 bg-card">
-                <button
-                  onClick={() => {
-                    const url = pickedEntry.streamingUrl || `https://www.google.com/search?q=${encodeURIComponent(pickedEntry.title)}+stremio`;
-                    window.open(url, '_blank');
-                    setPickedEntry(null);
-                  }}
-                  className="btn-primary flex items-center justify-center gap-2"
-                >
-                  <Play size={18} fill="currentColor" /> Watch Now
-                </button>
-                <button
-                  onClick={() => {
-                    setLibrary(prev => prev.map(e => e.id === pickedEntry.id ? { ...e, isPinned: true } : e));
-                    addToast('success', 'Pinned to top of list');
-                    setPickedEntry(null);
-                  }}
-                  className="btn-secondary text-[10px] font-bold uppercase tracking-widest"
-                >
-                  Pin to Top
-                </button>
-                <button
-                  onClick={() => handleSurpriseMe(pickedEntry.type)}
-                  className="col-span-2 text-text-muted hover:text-white text-[10px] font-bold uppercase tracking-widest pt-2"
-                >
-                  Pick Again
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
       </AnimatePresence>
 
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />

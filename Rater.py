@@ -2,8 +2,33 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import sys
+import os
 
-OMDB_API_KEY = "e4ac93ca"
+OMDB_API_KEYS = [
+    "1a118f7c", "e4ac93ca", "6055a849", "a26c954",
+    "d3c7a27e", "172b5c2d", "9f5d4cea", "c0e0387b", "50e5247a", "fd47297e"
+]
+KEY_STATE_FILE = os.path.join(os.path.dirname(__file__), ".omdb_key_index")
+
+def get_next_api_key():
+    index = 0
+    if os.path.exists(KEY_STATE_FILE):
+        try:
+            with open(KEY_STATE_FILE, "r") as f:
+                index = int(f.read().strip())
+        except Exception:
+            index = 0
+    
+    key = OMDB_API_KEYS[index % len(OMDB_API_KEYS)]
+    
+    # Save next index
+    try:
+        with open(KEY_STATE_FILE, "w") as f:
+            f.write(str((index + 1) % len(OMDB_API_KEYS)))
+    except Exception:
+        pass
+        
+    return key
 
 # --- 1. THE TRANSLATOR ---
 def get_urls_from_wikidata(imdb_id):
@@ -19,7 +44,7 @@ def get_urls_from_wikidata(imdb_id):
     
     urls: dict = {'rt_url': None, 'mc_url': None}
     try:
-        response = requests.get(url, params={'query': query}, headers=headers, timeout=15)
+        response = requests.get(url, params={'query': query}, headers=headers, timeout=5)
         if response.status_code == 200:
             data = response.json()
             results = data.get('results', {}).get('bindings', [])
@@ -52,24 +77,35 @@ def get_headers():
     }
 
 def scrape_omdb(imdb_id):
-    """Gets IMDb rating and Metascore via OMDB API."""
-    url = f"https://www.omdbapi.com/?i={imdb_id}&apikey={OMDB_API_KEY}"
-    try:
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('Response') == 'True':
-                imdb_val = data.get('imdbRating', 'N/A')
-                ms_val = data.get('Metascore', 'N/A')
-                return imdb_val, ms_val
-    except Exception:
-        pass
+    """Gets IMDb rating and Metascore via OMDB API with key rotation."""
+    all_limited = True
+    for _ in range(len(OMDB_API_KEYS)):
+        api_key = get_next_api_key()
+        url = f"https://www.omdbapi.com/?i={imdb_id}&apikey={api_key}"
+        try:
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('Response') == 'True':
+                    imdb_val = data.get('imdbRating', 'N/A')
+                    ms_val = data.get('Metascore', 'N/A')
+                    return imdb_val, ms_val
+                elif "limit" in data.get('Error', '').lower():
+                    continue
+                else:
+                    all_limited = False
+                    break
+        except Exception:
+            continue
+            
+    if all_limited:
+        return "LIMIT", "LIMIT"
     return "N/A", "N/A"
 
 def scrape_rotten_tomatoes(rt_url):
     if not rt_url: return "N/A", "N/A"
     try:
-        response = requests.get(rt_url, headers=get_headers(), timeout=15)
+        response = requests.get(rt_url, headers=get_headers(), timeout=5)
         if response.status_code != 200: return "N/A", "N/A"
 
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -90,6 +126,48 @@ def scrape_rotten_tomatoes(rt_url):
         pass
     return "N/A", "N/A"
 
+def scrape_metacritic(mc_url):
+    """Scrapes Metacritic for the Metascore (0-100), falls back to User Score * 10."""
+    if not mc_url: return "N/A"
+    try:
+        response = requests.get(mc_url, headers=get_headers(), timeout=10)
+        if response.status_code != 200: return "N/A"
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # 1st try: JSON-LD aggregateRating (Metascore, already 0-100)
+        import json as _json
+        for script in soup.find_all('script', type='application/ld+json'):
+            try:
+                data = _json.loads(script.string)
+                if isinstance(data, dict) and 'aggregateRating' in data:
+                    val = data['aggregateRating'].get('ratingValue')
+                    if val is not None and float(val) > 0:
+                        return str(int(float(val)))
+                if isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict) and 'aggregateRating' in item:
+                            val = item['aggregateRating'].get('ratingValue')
+                            if val is not None and float(val) > 0:
+                                return str(int(float(val)))
+            except Exception:
+                continue
+
+        # 2nd try: First User Score element (title="User score X.X out of 10"), multiply by 10
+        for score_div in soup.find_all('div', class_='c-siteReviewScore'):
+            title_attr = score_div.get('title', '')
+            if 'User score' in title_attr and 'out of 10' in title_attr:
+                score_text = score_div.text.strip()
+                if score_text and score_text != 'tbd':
+                    user_val = float(score_text) * 10
+                    if user_val > 0:
+                        return str(int(user_val))
+                break  # Only check the first user score
+
+    except Exception:
+        pass
+    return "N/A"
+
 
 # --- 3. MAIN EXECUTION & MATH ---
 def calculate_ultimate_score(imdb_score, mc_score, rt_critics, rt_audience):
@@ -98,7 +176,8 @@ def calculate_ultimate_score(imdb_score, mc_score, rt_critics, rt_audience):
         def safe_float(val):
             if not val or val == "N/A": return None
             try:
-                clean_val = val.split('/')[0].replace('%', '').strip()
+                # Handle % and / formats
+                clean_val = str(val).split('/')[0].replace('%', '').strip()
                 return float(clean_val)
             except (ValueError, IndexError):
                 return None
@@ -108,35 +187,28 @@ def calculate_ultimate_score(imdb_score, mc_score, rt_critics, rt_audience):
         rc_val = safe_float(rt_critics)
         ra_val = safe_float(rt_audience)
         
-        # Base variables
         imdb_10 = None
-        rt_avg = None
-        
         score_sum = 0
         weight_sum = 0
 
-        # Process IMDB (40% weight)
         if i_val is not None:
-            imdb_10 = i_val * 10
+            imdb_10 = i_val * 10 if (0 < i_val < 11) else i_val
             score_sum += imdb_10 * 0.40
             weight_sum += 0.40
 
-        # Process Metacritic (40% weight)
-        if m_val is not None:
+        if m_val is not None and m_val > 0:
             score_sum += m_val * 0.40
             weight_sum += 0.40
 
-        # Process Rotten Tomatoes (20% weight)
-        rt_scores: list[float] = []
-        if rc_val is not None: rt_scores.append(rc_val)
-        if ra_val is not None: rt_scores.append(ra_val)
+        rt_scores = []
+        if rc_val is not None and rc_val > 0: rt_scores.append(rc_val)
+        if ra_val is not None and ra_val > 0: rt_scores.append(ra_val)
         
         if rt_scores:
             rt_avg = sum(rt_scores) / len(rt_scores)
             score_sum += rt_avg * 0.20
             weight_sum += 0.20
 
-        # Calculate final proportional score
         if weight_sum == 0:
             return None, ["All Sources"], None
 
@@ -154,13 +226,55 @@ def calculate_ultimate_score(imdb_score, mc_score, rt_critics, rt_audience):
 
 
 if __name__ == "__main__":
-    # When called from Node.js backend: python Rater.py <imdb_id>
-    # Output is always JSON for machine parsing
     if len(sys.argv) > 1:
         imdb_id = sys.argv[1].strip()
-        
+        forced_key = None
+        entry_type = "movie"  # default
+
+        # Parse remaining args: could be [api_key] [--type movie|series]
+        i = 2
+        while i < len(sys.argv):
+            arg = sys.argv[i].strip()
+            if arg == "--type" and i + 1 < len(sys.argv):
+                entry_type = sys.argv[i + 1].strip().lower()
+                i += 2
+            elif not forced_key:
+                forced_key = arg
+                i += 1
+            else:
+                i += 1
+
         urls = get_urls_from_wikidata(imdb_id)
-        imdb_score, mc_score = scrape_omdb(imdb_id)
+        mc_source = "omdb"  # Track where mc_score came from
+
+        if forced_key:
+            url = f"https://www.omdbapi.com/?i={imdb_id}&apikey={forced_key}"
+            imdb_score, mc_score = "N/A", "N/A"
+            try:
+                response = requests.get(url, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get('Response') == 'True':
+                        imdb_score = data.get('imdbRating', 'N/A')
+                        mc_score = data.get('Metascore', 'N/A')
+            except Exception: pass
+        else:
+            imdb_score, mc_score = scrape_omdb(imdb_id)
+
+        # For series: ALWAYS scrape Metacritic website (ignore OMDB Metascore)
+        # For movies: use OMDB Metascore, fallback to website if unavailable
+        if entry_type == "series":
+            mc_score = "N/A"  # Force website scrape for series
+            mc_source = "metacritic"
+
+        if mc_score in (None, "N/A", "") and urls.get('mc_url'):
+            scraped_mc = scrape_metacritic(urls['mc_url'])
+            if scraped_mc != "N/A":
+                mc_score = scraped_mc
+                mc_source = "metacritic"
+            else:
+                mc_source = "none"
+
         rt_critics, rt_audience = scrape_rotten_tomatoes(urls['rt_url'])
         
         score, breakdown, error = calculate_ultimate_score(imdb_score, mc_score, rt_critics, rt_audience)
@@ -171,38 +285,30 @@ if __name__ == "__main__":
                 'imdb_10': breakdown['imdb_10'],
                 'm_val': breakdown['m_val'],
                 'rc_val': breakdown['rc_val'],
-                'ra_val': breakdown['ra_val']
+                'ra_val': breakdown['ra_val'],
+                'mc_source': mc_source
             }))
         else:
             if isinstance(breakdown, list):
-                print(json.dumps({'error': f"Missing data for: {', '.join(breakdown)}"}))
+                print(json.dumps({'error': f"LIMIT" if imdb_score == "LIMIT" else f"Missing data for: {', '.join(breakdown)}"}))
             else:
                 print(json.dumps({'error': error or 'Unknown error'}))
     else:
-        # Interactive mode for manual use
         imdb_id = input("Enter IMDb ID: ").strip()
-        if not imdb_id:
-            sys.exit()
-            
+        if not imdb_id: sys.exit()
         urls = get_urls_from_wikidata(imdb_id)
-        
-        print(f"Scraping OMDB ({imdb_id})...")
         imdb_score, mc_score = scrape_omdb(imdb_id)
-        print(f"Scraping Rotten Tomatoes...")
+        # Metacritic fallback: if OMDB didn't return Metascore, scrape website
+        if mc_score in (None, "N/A", "") and urls.get('mc_url'):
+            mc_score = scrape_metacritic(urls['mc_url'])
         rt_critics, rt_audience = scrape_rotten_tomatoes(urls['rt_url'])
-        
         score, breakdown, error = calculate_ultimate_score(imdb_score, mc_score, rt_critics, rt_audience)
-        
         if score is not None and isinstance(breakdown, dict):
             print(f"\n- IMDB ID: {imdb_id}")
             print(f"- IMDB RATING*10: {breakdown['imdb_10']:.0f}")
             print(f"- Metacritic score: {breakdown['m_val']:.0f}")
-            print(f"- RT critics: {breakdown['rc_val']:.0f}")
-            print(f"- RT Audience: {breakdown['ra_val']:.0f}")
+            print(f"- RT critics: {breakdown['rc_val'] or 0:.0f}")
+            print(f"- RT Audience: {breakdown['ra_val'] or 0:.0f}")
             print(f"- Ultimate Score: {score:.1f}")
         else:
-            if isinstance(breakdown, list):
-                print(f"\nError: Could not calculate. Missing data for: {', '.join(breakdown)}")
-            else:
-                print(f"\nCritical Error: {error}")
-            print(f"Raw -> OMDB IMDb: {imdb_score} | OMDB Metascore: {mc_score} | RT: {rt_critics}/{rt_audience}")
+            print(f"\nError: {error or 'Could not calculate'}")

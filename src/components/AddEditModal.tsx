@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Search, Star, Plus, Minus, Calendar, Clock, Tv, Film, Play, Sparkles, Loader2, Save, Info, Tag, Hash } from 'lucide-react';
 import { LibraryEntry, MediaType, WatchStatus } from '../types';
-import { cn, generateId } from '../utils';
+import { cn, generateId, calculateUltimateScore } from '../utils';
 import { searchTMDB, getExternalIds } from '../services/tmdb';
 import { api } from '../services/api';
 import { motion, AnimatePresence } from 'motion/react';
@@ -92,40 +92,24 @@ export const AddEditModal: React.FC<AddEditModalProps> = ({
 
       console.log('[ReelTrack] Enriched entry from backend:', JSON.stringify(enriched, null, 2));
 
-      setFormData(prev => {
-        const next = { ...prev };
-        if (enriched.title) next.title = enriched.title;
-        if (enriched.type) next.type = enriched.type as any;
-        if (enriched.year) next.year = parseInt(String(enriched.year));
-        if (enriched.runtime) next.runtime = parseInt(String(enriched.runtime));
-        if (enriched.poster) next.poster = enriched.poster;
-        if (enriched.description) next.description = enriched.description;
-        if (enriched.director) next.director = enriched.director;
-        if (enriched.genres) {
-          next.genres = Array.isArray(enriched.genres)
-            ? enriched.genres
-            : String(enriched.genres).split(',').map((s: any) => s.trim()).filter(Boolean);
-        }
-        if (enriched.cast) {
-          next.cast = Array.isArray(enriched.cast) ? enriched.cast : [String(enriched.cast)];
-        }
-        if (enriched.streamingUrl) next.streamingUrl = enriched.streamingUrl;
-        if (enriched.tmdbPopularity) next.tmdbPopularity = enriched.tmdbPopularity;
-        if (enriched.vote_average) next.vote_average = enriched.vote_average;
-        if (enriched.seasons) next.seasons = enriched.seasons;
-        next.imdbId = imdbId;
-        next.tmdbId = enriched.tmdbId || result.id;
-        next.ultimate_score = enriched.ultimate_score;
-        next.imdb_10 = enriched.imdb_10;
-        next.m_val = enriched.m_val;
-        next.rc_val = enriched.rc_val;
-        next.ra_val = enriched.ra_val;
-        console.log('[ReelTrack] Updated form state:', JSON.stringify(next, null, 2));
-        return next;
-      });
+      const nextFormData = {
+        ...formData,
+        ...enriched,
+        imdb_score: (enriched as any).imdb_score,
+        mc_score: (enriched as any).mc_score,
+        rt_critics: (enriched as any).rt_critics,
+        rt_audience: (enriched as any).rt_audience,
+        imdbId,
+        tmdbId: enriched.tmdbId || result.id,
+      };
 
-      if (enriched.ultimate_score) {
-        onToast('success', `Analytics Complete: ${(enriched.ultimate_score / 10).toFixed(1)} ★ Ultimate Score`);
+      setFormData(nextFormData);
+
+      console.log('[ReelTrack] Enriched form state:', JSON.stringify(nextFormData, null, 2));
+
+      const ultimateScore = calculateUltimateScore(nextFormData);
+      if (ultimateScore) {
+        onToast('success', `Analytics Complete: ${(ultimateScore / 10).toFixed(1)} ★ Ultimate Score`);
       } else {
         onToast('success', 'Metadata synchronized successfully.');
       }
@@ -393,6 +377,20 @@ export const AddEditModal: React.FC<AddEditModalProps> = ({
                     </motion.div>
                   )}
 
+                  {/* Genres */}
+                  <div className="space-y-4">
+                    <label className="text-[11px] font-black uppercase tracking-[0.3em] text-text-muted flex items-center gap-2">
+                      Genre Classification
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.genres?.join(', ') || ''}
+                      onChange={(e) => setFormData({ ...formData, genres: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
+                      className="input-field w-full py-4 bg-white/5 border-white/10"
+                      placeholder="Action, Sci-Fi, Drama..."
+                    />
+                  </div>
+
                   {/* Description */}
                   <div className="space-y-4">
                     <label className="text-[11px] font-black uppercase tracking-[0.3em] text-text-muted">Master Synopsis</label>
@@ -461,6 +459,34 @@ export const AddEditModal: React.FC<AddEditModalProps> = ({
                         <Star size={40} className="text-accent fill-accent shadow-accent-glow" />
                       </div>
                     </div>
+
+                    {/* External Ratings Breakdown */}
+                    {(() => {
+                      const ultimateScore = calculateUltimateScore(formData);
+                      if (!ultimateScore) return null;
+                      return (
+                        <div className="mt-10 pt-10 border-t border-white/5 space-y-6">
+                          <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-text-muted">Mastermind Synthesis Breakdown</h4>
+                          <div className="grid grid-cols-2 gap-4">
+                            {[
+                              { label: 'IMDb', value: Math.round(formData.imdb_score ?? formData.imdb_10 ?? 0) || 'N/A' },
+                              { label: 'Metascore', value: Math.round(formData.mc_score ?? formData.m_val ?? 0) || 'N/A' },
+                              { label: 'RT Critics', value: Math.round(formData.rt_critics ?? formData.rc_val ?? 0) || 'N/A' },
+                              { label: 'RT Audience', value: Math.round(formData.rt_audience ?? formData.ra_val ?? 0) || 'N/A' },
+                            ].map((stat, i) => (
+                              <div key={i} className="flex justify-between items-center p-3 rounded-xl bg-white/[0.02] border border-white/5">
+                                <span className="text-[10px] font-bold text-text-muted uppercase tracking-wider">{stat.label}</span>
+                                <span className="text-sm font-bebas text-white tracking-widest">{stat.value}</span>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="p-4 rounded-2xl bg-accent/5 border border-accent/10 flex justify-between items-center">
+                            <span className="text-[10px] font-black text-accent uppercase tracking-widest">Final Ultimate Score</span>
+                            <span className="text-2xl font-bebas text-accent">{ultimateScore}</span>
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {/* Rewatch Logic */}
