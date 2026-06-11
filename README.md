@@ -23,7 +23,7 @@ A powerful and elegant tracking application for movie and series enthusiasts. Or
 | Animations | Motion (Framer Motion) |
 | Icons | Lucide React |
 | Backend | Node.js, Express |
-| Database | MySQL (via XAMPP) |
+| Database | MySQL |
 | Rating Engine | Python (Rater.py) |
 | APIs | TMDB, OMDB (multi-key rotation) |
 
@@ -42,14 +42,13 @@ reeltrack/
 │   └── schema.sql          # MySQL database schema
 ├── Rater.py                # Python scoring engine (IMDb/MC/RT scraper)
 ├── DESIGN.md               # UI/UX design system & theme reference
-├── CLAUDE.md               # AI agent rules & project context
 ├── start.bat               # One-click startup script
 └── stremio-reeltrack-sync.user.js  # Stremio browser userscript
 ```
 
 ## Setup & Running
 
-1. **Prerequisites**: Node.js, Python 3, XAMPP (MySQL + Apache).
+1. **Prerequisites**: Node.js, Python 3, MySQL.
 
 2. **Install dependencies**:
 
@@ -62,7 +61,7 @@ reeltrack/
    - Root `.env`: Database credentials (`DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`)
    - `backend/.env`: `OMDB_API_KEYS=key1,key2,...` and `PORT=3001`
 
-4. **Database**: Import `backend/schema.sql` into MySQL via phpMyAdmin or CLI.
+4. **Database**: Import `backend/schema.sql` into MySQL.
 
 5. **Development**:
 
@@ -73,13 +72,6 @@ reeltrack/
 
 6. **Quick Start**: Run `start.bat` to launch everything at once.
 
-## Deployment (XAMPP)
-
-This project is pre-configured for **XAMPP (Apache)**.
-
-1. Build the project: `npm run deploy`
-2. Accessible at: `http://localhost/reeltrack/`
-
 ## Design System
 
-The full design system — colors, typography, animations, and component classes — is documented in [`DESIGN.md`](DESIGN.md). Any UI changes must follow these guidelines.
+The full design system — colors, typography, animations, and component classes — is documented in [`DESIGN.md`](DESIGN.md). Any UI changes should follow these guidelines.
